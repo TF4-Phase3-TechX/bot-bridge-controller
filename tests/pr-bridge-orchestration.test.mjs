@@ -59,12 +59,14 @@ function fixture(options = {}) {
   let fetched, mainSha = main, sourceReads = 0;
   const spawnImpl = (_command, raw) => {
     const args = raw.slice(4);
+    if (options.branchFetchFailure && args[0] === 'fetch' && args.includes('--prune')) throw new Error('Branch snapshot unavailable');
     let stdout = '', status = 0;
     if (args[0] === 'fetch' && args[3]?.startsWith('refs/pull/')) {
       const n = Number(args[3].split('/')[2]);
       fetched = (args[2].includes('/A/') ? sources : targets).find(p => p.number === n).head.sha;
     }
     if (args[0] === 'rev-parse') stdout = args[1] === 'FETCH_HEAD' ? fetched : mainSha;
+    if (args[0] === 'for-each-ref') stdout = mainSha + ' ' + args[2] + 'main';
     if (args[0] === 'merge-base') {
       if (args[1] === '--is-ancestor') status = isAncestor(args[2], args[3]) ? 0 : 1;
       else stdout = base;
@@ -158,6 +160,13 @@ test('normal source fast-forward still updates incoming', async () => {
   assert.equal(r.passed, true);
   assert.ok(f.pushes.some(p => p.at(-1) === rewritten + ':refs/heads/incoming/a-pr-2'));
   assert.ok(f.pushes.every(p => !p.some(arg => arg.startsWith('--force'))));
+});
+test('branch reconciliation errors remain visible without starving PR contribution', async () => {
+  const f = fixture({ branchFetchFailure: true }), r = await f.run();
+  assert.equal(r.passed, false);
+  assert.match(r.error, /B-to-A branches failed/);
+  assert.equal(r.branches[0].state, 'error');
+  assert.deepEqual(r.pairs.map(p => p.state), ['pending', 'pending']);
 });
 test('rewritten A feature branch is blocked per pair without force-push or starving another PR', async () => {
   const f = fixture({ diverged: true }), r = await f.run();

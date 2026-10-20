@@ -6,6 +6,7 @@ import { mainSyncDecision, mainSyncPush, pairDecision, assertMutation, assertPus
 import { reviewFeedback, reviewSummary } from './pr-bridge-reviews.mjs';
 import { conversationCopies } from './pr-bridge-comments.mjs';
 import { loadConfig, pairConfig } from './bridge-config.mjs';
+import { syncBranches } from './branch-sync.mjs';
 
 export async function runBridge({
   config,
@@ -131,7 +132,7 @@ async function run() {
     });
     if (!response.ok) throw new Error('Cannot verify installation token scope');
     const scope = await response.json();
-    if (scope.total_count !== 1 || scope.repositories[0]?.full_name !== expected || !scope.repositories[0]?.private) throw new Error('Token must cover exactly its private lab repository');
+    if (scope.total_count !== 1 || scope.repositories[0]?.full_name !== expected || !scope.repositories[0]?.private) throw new Error('Token must cover exactly its private repository');
   }
   const aUrl = `https://github.com/${source}.git`, bUrl = `https://github.com/${target}.git`;
   git(['fetch', '--no-tags', aUrl, '+refs/heads/main:refs/remotes/bridge/a-main'], sourceToken);
@@ -154,6 +155,7 @@ async function run() {
   report.sourceAfter = (await api(source, '/git/ref/heads/main')).object.sha;
   if (report.sourceAfter !== bSha) throw new Error('A main changed concurrently; retry after inspection');
 
+  report.branches = await syncBranches({ source, target, sourceToken, targetToken, git, api, list, ancestor });
   const prs = await relevantPulls(source);
   const targetPRs = await relevantPulls(target);
   if (report.trigger?.pr) {
@@ -260,6 +262,7 @@ async function run() {
     }
   }
   if (report.pairs.some(p => p.state === 'error')) throw new Error('Some PR pairs failed; remaining pairs were still processed');
+  if (report.branches.some(b => b.state === 'error')) throw new Error('Some B-to-A branches failed; other branches and PR pairs were still processed');
 }
 try { await run(); report.passed = true; }
 catch (error) { report.passed = false; report.error = error.message; }
@@ -269,6 +272,9 @@ finally {
     `A/main before: \`${report.sourceBefore ?? 'unknown'}\``, `B/main: \`${report.targetMain ?? 'unknown'}\``,
     `A/main after: \`${report.sourceAfter ?? 'unknown'}\``, `Main sync: **${report.mainSync ?? 'not-started'}**`, '',
     report.recoveryRef ? `Previous A/main preserved at \`${report.recoveryRef}\` before replacement.\n` : '',
+    '## B-to-A branches', '',
+    ...((report.branches ?? []).map(b => `- ${encodeURIComponent(b.branch ?? '(snapshot)')}: **${b.state}**${b.recovery ? `; recovery: ${encodeURIComponent(b.recovery)}` : ''}`)),
+    '', 'Open A PR heads are deferred; A-only branches are retained. No branch deletions or reverse mirroring.', '',
     '| A PR | B PR | State | Source head |', '|---|---|---|---|',
     ...report.pairs.map(p => `| [#${p.a}](https://github.com/${source}/pull/${p.a}) | ${p.b ? `[#${p.b}](https://github.com/${target}/pull/${p.b})` : '—'} | ${p.state} | \`${p.sourceHead ?? ''}\` |`),
     report.error ? `\nStopped: ${report.error}` : '', ''].join('\n');

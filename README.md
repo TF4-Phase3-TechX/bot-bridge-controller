@@ -1,20 +1,17 @@
-# Contribution bridge controller
+# Private contribution controller
 
-A chủ động gửi một PR và một head SHA qua notifier `workflow_dispatch`. Mở PR, sửa code, schedule hay B event không tự chuyển commit mới sang B. B quyết định review/merge; controller tiếp tục đồng bộ lịch sử đã chấp nhận về A và phản hồi review/comment.
+B decides whether contributions enter main. Event notifiers at A/B dispatch this trusted controller; the six-hour schedule is a fallback. Three Apps separate A synchronization, B contribution transport, and Actions dispatch.
 
-Controller xác minh run notifier qua GitHub API: đúng repo/workflow/default branch, event manual, run-name khớp PR + SHA, lần chạy đầu, thành công, không quá một giờ và người chạy hiện có Write. Không tin actor/SHA chỉ vì caller có Dispatch key. PR phải open, ready, cùng repo và đúng base/head; nếu SHA thay đổi trước transport, yêu cầu gửi lại. Re-run job cũ không được dùng để gửi code; chọn Run workflow mới.
+Code transport keys remain here. A/B each hold the dispatch key (Actions write on this controller), so developers allowed to run workflows at A can use that key. A/main is copied from authoritative B/main, preserving divergent A history in a recovery ref before an atomic replacement with a lease. Only Git objects are transported; contribution code is never executed here.
 
-App Sync cần Contents/Pull requests/Workflows write và **Actions read**. App Transport giữ Contents/Pull requests write, không Workflows write. App Dispatch chỉ Actions write tại controller. Transport keys chỉ nằm ở controller; không checkout/chạy code contribution. Default branch A phải được SRE bảo vệ; GitHub Free với private repo không cung cấp rulesets để kiểm chứng ranh giới này.
+PR identity is the expected bot author plus the B repository and `incoming/a-pr-N` head branch. Maintainer edits to B title/body are retained. B may append commits; the controller never force-pushes B. Diverged branches get a per-pair status. Closed A does not cause the bot to close B. B still decides. PR body asks for Create a merge commit to preserve original commit identity; it is a human convention, not enforced by merge-method settings.
 
-`bridge.config.json` khai báo các cặp; `sourceBranch`/`targetBranch` mặc định main, hỗ trợ main hoặc dev. Controller luôn chạy từ main. Notifier manual luôn chạy từ default branch A, kể cả contribution base là dev. Không dùng source PR branch làm workflow ref.
+Open PRs and closed PRs updated within seven days are reconciled; explicit PR events can reach older pairs. Pair-local failures are reported while other pairs continue. Overall failure remains visible. Main synchronization runs before pair processing.
 
-Incoming branch B chỉ cập nhật khi có submission hợp lệ cho đúng PR. Không force-push B, không merge B. B có thể thêm commit; divergence cần xử lý riêng. Khi B merge, A chỉ đóng nếu lịch sử gốc và merge result đã được đồng bộ; commit chưa gửi vẫn được giữ. B reject không đóng A nếu A còn revision mới chưa được xét.
+Set `BRIDGE_ENABLED=true` only after setup and policy checks. Push/PR events test the controller without App keys. Schedule/dispatch runs tests on the event's pinned main revision in the reconcile job before minting scoped App tokens. Policy and reconcile have separate concurrency groups.
 
-Schedule 6 giờ/dispatch controller không có inputs chỉ reconcile; không gửi PR mới. A comment được đồng bộ vào lần reconcile tiếp theo. Job policy chạy tests không có App keys; reconcile kiểm tra code trước khi mint token. Giữ BRIDGE_ENABLED=false khi rollout, deploy controller trước notifier, kiểm App permissions và guard các job ứng dụng chỉ chạy tại B trước khi đồng bộ về A.
+Production must restrict App B from writing or merging B/main and developers from merging A/main using supported GitHub protection. This is separate from merge-method guidance. Treat incoming PR code as untrusted in B CI: no secrets/write tokens in its build/test job. Guard B-only deployment workflows by repository before copying them to A.
 
-```bash
-node --check scripts/pr-bridge.mjs
-node --test tests/*.test.mjs
-```
+Run `node --check scripts/pr-bridge.mjs` and `node --test tests/*.test.mjs`. The suite includes policy, review/comment rendering, real local Git recovery/lease fixtures, and mocked controller orchestration. Live GitHub validation is separate.
 
-Production phải chặn developer cập nhật main/dev tại A, chặn Transport App ghi/merge protected base tại B, và chỉ SRE quản lý controller. Disable workflow tại A là trạng thái vận hành, không chặn workflow mới lần đầu: cần repository guard tại từng job B-only. Disable không hủy run đã queued/running.
+Multiple repository pairs share bridge.config.json, the same scripts, and one workflow. Add a unique id/source/target entry per pair. The secret-free plan job selects one pair for an event or all pairs for a manual/scheduled sweep. Each matrix job gets tokens restricted to its two repositories and has its own concurrency group; fail-fast is disabled. The three Apps and controller secrets are reused. Each A/B repository needs its notifier and dispatch secret configured. Never give a job an installation-wide token.

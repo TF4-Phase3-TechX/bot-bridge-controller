@@ -19,9 +19,9 @@ test('A and B PR, review and conversation notifications retain provenance', () =
 });
 test('notification rejects foreign repos, injected metadata and invalid event scopes', () => {
   for (const invalid of [
-    { repo: 'outside/repo' }, { sha: 'main' }, { runId: '12/../../' }, { repo: 'B/repo', event: 'workflow_dispatch' },
+    { repo: 'outside/repo' }, { sha: 'main' }, { runId: '12/../../' }, { event: 'workflow_dispatch' },
     { pr: '0' }, { pr: '8; merge' }, { pr: '' }, { event: 'push', pr: '' },
     { repo: 'B/repo', event: 'push', pr: '8' }, { repo: '', sha: '', runId: '' },
-  ]) assert.throws(() => notificationMetadata({ ...base, ...invalid }), /Invalid notification|Manual submission/);
+  ]) assert.throws(() => notificationMetadata({ ...base, ...invalid }), /Invalid notification/);
   assert.equal(notificationMetadata({ ...base, repo: 'B/repo', event: 'push', pr: '' }).event, 'push');
 });

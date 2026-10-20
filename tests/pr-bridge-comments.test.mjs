@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { conversationCopies } from '../scripts/pr-bridge-comments.mjs';
-const comment = { id: 1, user: { type: 'User', login: 'dev' }, author_association: 'MEMBER', body: 'Addressed finding at abc123.', html_url: 'https://github.com/org/repo/pull/1#issuecomment-1', created_at: '2026-10-20', updated_at: '2026-10-20' };
+const comment = { id: 1, user: { type: 'User', login: 'dev' }, author_association: 'CONTRIBUTOR', bridge_permission: 'write', body: 'Addressed finding at abc123.', html_url: 'https://github.com/org/repo/pull/1#issuecomment-1', created_at: '2026-10-20', updated_at: '2026-10-20' };
 const args = { originRepo: 'org/repo', originPr: 1, originSide: 'A', comments: [comment], existing: [], destinationBot: 'bridge[bot]' };
 test('copies human conversation with identity, provenance and literal content', () => {
   const [copy] = conversationCopies(args);
@@ -9,10 +9,11 @@ test('copies human conversation with identity, provenance and literal content', 
   assert.match(copy.body, /```text\nAddressed finding/);
   assert.match(copy.body, /merge authority remain at B/);
 });
-test('ignores bots and outside collaborators without an allowed association', () => {
+test('uses verified repository permission, ignores bots and read-only or unknown authors', () => {
   assert.deepEqual(conversationCopies({ ...args, comments: [
     { ...comment, user: { type: 'Bot', login: 'bridge[bot]' } },
-    { ...comment, author_association: 'NONE' },
+    { ...comment, bridge_permission: 'read' },
+    { ...comment, bridge_permission: undefined, author_association: 'OWNER' },
   ] }), []);
 });
 test('idempotent and edits only a copy authored by the expected bot', () => {

@@ -83,6 +83,17 @@ async function syncConversation(aPr, bPr) {
     { originRepo: source, originPr: aPr, originSide: 'A', comments: aComments, existing: bComments, destinationBot: bot, repo: target, pr: bPr },
     { originRepo: target, originPr: bPr, originSide: 'B', comments: bComments, existing: aComments, destinationBot: sourceBot, repo: source, pr: aPr },
   ]) {
+    // author_association can be CONTRIBUTOR for an org owner when viewed by an App.
+    // Check actual repository permission instead; no organization Members access is needed.
+    for (const c of side.comments) {
+      if (c.user?.type !== 'User') continue;
+      const key = `${side.originRepo}:${c.user.login}`;
+      if (!conversationPermissions.has(key)) {
+        const result = await api(side.originRepo, `/collaborators/${encodeURIComponent(c.user.login)}/permission`);
+        conversationPermissions.set(key, result.permission);
+      }
+      c.bridge_permission = conversationPermissions.get(key);
+    }
     for (const copy of conversationCopies(side)) {
       await api(side.repo, copy.id ? `/issues/comments/${copy.id}` : `/issues/${side.pr}/comments`, {
         method: copy.id ? 'PATCH' : 'POST', body: { body: copy.body },
@@ -90,6 +101,7 @@ async function syncConversation(aPr, bPr) {
     }
   }
 }
+const conversationPermissions = new Map();
 async function run() {
   if (process.env.GITHUB_REPOSITORY !== controllerRepo || process.env.GITHUB_REF !== 'refs/heads/main') throw new Error('Controller must run from isolated controller main');
   if (!sourceToken || !targetToken) throw new Error('Missing scoped tokens');

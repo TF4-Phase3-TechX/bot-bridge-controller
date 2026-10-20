@@ -1,7 +1,7 @@
 import { textBlock } from './pr-bridge-reviews.mjs';
 
 export function conversationCopies({ originRepo, originPr, originSide, comments, existing, destinationBot }) {
-  return comments.filter(c => c.user?.type === 'User' && ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(c.author_association))
+  return comments.filter(c => c.user?.type === 'User' && ['write', 'admin'].includes(c.bridge_permission))
     .map(c => {
       const marker = `<!-- bridge-conversation:${originRepo}#${originPr}:${c.id} -->`;
       const body = `${marker}\n### ${originSide} comment by ${c.user.login}\n\nOriginal comment: ${c.html_url}\n\nCreated: ${c.created_at} · Updated: ${c.updated_at}\n\n${textBlock(c.body)}\n\nCopied conversation only. Review decisions and merge authority remain at B.`;

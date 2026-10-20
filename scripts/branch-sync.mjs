@@ -77,7 +77,12 @@ export async function syncBranches({ source, target, sourceToken, targetToken, g
         const replace = before !== null && !ancestor(before, accepted);
         const plan = branchSyncPush({ source, target, repo: source, branch, before, accepted, replace });
         git(['push', ...plan.options, aUrl, ...plan.refs], sourceToken);
-        if ((await api(source, path)).object.sha !== accepted) throw new Error('A branch changed after sync; retry');
+        // A successful Git push may precede REST ref visibility (404 on new
+        // branches). Verify through the same Git transport, without treating
+        // a stale REST response as a failed write or relaxing the SHA check.
+        const ref = `refs/heads/${branch}`;
+        const actual = git(['ls-remote', '--exit-code', '--heads', aUrl, ref], sourceToken).text;
+        if (actual !== `${accepted}\t${ref}`) throw new Error('A branch changed after sync; retry');
         entry.state = before === null ? 'created' : replace ? 'replaced-with-recovery' : 'fast-forward';
         entry.recovery = plan.recovery;
       } catch (error) {

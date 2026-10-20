@@ -30,8 +30,12 @@ async function fixture(fn) {
     const get = (repo, branch) => raw(['--git-dir', repo === source ? a : b, 'rev-parse', '--verify', `refs/heads/${branch}`]).text;
     set(source, 'main', base); set(target, 'main', base);
     const pushes = [], open = new Set();
-    let beforePush, beforeRead, failBranch;
+    let beforePush, beforeRead, beforeVerify, failBranch;
     const git = (args, token, allow) => {
+      if (args[0] === 'ls-remote') {
+        assert.equal(token, 'source-token');
+        if (beforeVerify) { const f = beforeVerify; beforeVerify = null; f(); }
+      }
       if (args[0] === 'push') {
         pushes.push([...args]);
         assert.equal(token, 'source-token');
@@ -42,6 +46,8 @@ async function fixture(fn) {
       return raw(args.map(arg => arg === `https://github.com/${source}.git` ? a : arg === `https://github.com/${target}.git` ? b : arg), allow);
     };
     const api = async (repo, path) => {
+      // Regression fixture: a new A ref is visible through Git before REST.
+      if (repo === source) throw new Error('GitHub GET A ref: 404');
       const branch = decodeURIComponent(path.slice('/git/ref/heads/'.length));
       if (beforeRead) { const f = beforeRead; beforeRead = null; f(); }
       return { object: { sha: get(repo, branch) } };
@@ -52,7 +58,8 @@ async function fixture(fn) {
       ancestor: (old, newer) => raw(['merge-base', '--is-ancestor', old, newer], [0, 1]).status === 0,
     });
     await fn({ base, next, other, set, get, raw, a, b, run, open, pushes,
-      raceA: f => { beforePush = f; }, raceB: f => { beforeRead = f; }, fail: branch => { failBranch = branch; } });
+      raceA: f => { beforePush = f; }, raceB: f => { beforeRead = f; },
+      raceAfterPush: f => { beforeVerify = f; }, fail: branch => { failBranch = branch; } });
   } finally {
     assert.equal(dirname(resolve(dir)), resolve(tmpdir()));
     assert.ok(basename(dir).startsWith('bridge-branches-test-'));
@@ -113,6 +120,20 @@ test('concurrent B advance is detected before write', () => fixture(async f => {
   const r = await f.run();
   assert.equal(r.find(x => x.branch === 'release/race').state, 'error');
   assert.equal(f.get(source, 'release/race'), f.base); assert.equal(f.pushes.length, 0);
+}));
+test('new A ref verifies through Git even when REST has not exposed it yet', () => fixture(async f => {
+  f.set(target, 'release/new', f.next);
+  const r = await f.run();
+  assert.equal(r.find(x => x.branch === 'release/new').state, 'created');
+  assert.equal(f.get(source, 'release/new'), f.next);
+}));
+test('post-push verification still rejects a concurrent A change', () => fixture(async f => {
+  f.set(target, 'release/race-after', f.next);
+  f.raceAfterPush(() => f.set(source, 'release/race-after', f.other));
+  const r = await f.run();
+  assert.equal(r.find(x => x.branch === 'release/race-after').state, 'error');
+  assert.match(r.find(x => x.branch === 'release/race-after').error, /A branch changed after sync/);
+  assert.equal(f.get(source, 'release/race-after'), f.other);
 }));
 test('occupied recovery or ref-prefix conflict cannot destroy A; other branches still sync', () => fixture(async f => {
   f.set(source, 'release/diverged', f.other); f.set(target, 'release/diverged', f.next);

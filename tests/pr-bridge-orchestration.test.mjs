@@ -67,6 +67,10 @@ function fixture(options = {}) {
       fetched = (args[2].includes('/A/') ? sources : targets).find(p => p.number === n).head.sha;
     }
     if (args[0] === 'rev-parse') stdout = args[1] === 'FETCH_HEAD' ? fetched : mainSha;
+    if (args[0] === 'ls-remote') {
+      const ref = args.at(-1);
+      stdout = `${mirrored.get(ref.slice('refs/heads/'.length))}\t${ref}`;
+    }
     if (args[0] === 'for-each-ref') {
       stdout = mainSha + ' ' + args[2] + 'main';
       if (options.reflectIncoming) {

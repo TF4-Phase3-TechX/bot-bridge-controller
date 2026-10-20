@@ -1,5 +1,5 @@
-name: Isolated bridge - B decides
-run-name: ${{ inputs.source_repo && format('Reconcile {0} {1} PR {2}', inputs.source_repo, inputs.source_event || 'push', inputs.source_pr || '-') || 'Isolated bridge - B decides' }}
+name: Contribution bridge controller
+run-name: ${{ inputs.source_repo && format('Reconcile {0} {1} PR {2}', inputs.source_repo, inputs.source_event || 'push', inputs.source_pr || '-') || 'Contribution bridge controller' }}
 on:
   workflow_dispatch:
     inputs:
@@ -8,11 +8,11 @@ on:
         required: false
         type: string
       source_sha:
-        description: Event SHA for traceability; controller reads actual PRs and B main
+        description: Exact submitted A PR SHA, or B event SHA for reconciliation
         required: false
         type: string
       source_run_id:
-        description: B notification workflow run ID
+        description: Source notifier run ID; A submissions require a verified successful manual run
         required: false
         type: string
       source_event:
@@ -70,7 +70,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     concurrency:
-      group: isolated-bridge-${{ matrix.id }}
+      group: contribution-bridge-${{ matrix.id }}
       cancel-in-progress: false
     name: Reconcile ${{ matrix.id }}
     runs-on: ubuntu-latest
@@ -95,6 +95,7 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
           permission-workflows: write
+          permission-actions: ${{ inputs.source_event == 'workflow_dispatch' && 'read' || '' }}
       - name: Token scoped only to repo B without Workflows write
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510
         id: target

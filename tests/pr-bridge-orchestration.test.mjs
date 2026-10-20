@@ -18,14 +18,14 @@ function fixture(options = {}) {
   };
   const a = n => ({
     number: n, state: 'open', draft: false, title: 'Contribution ' + n,
-    updated_at: recent, base: { ref: 'main' },
+    updated_at: recent, base: { ref: options.branch || 'main' },
     head: { sha: n === 2 ? head : second, repo: { full_name: config.source } },
     html_url: `https://github.com/${config.source}/pull/${n}`,
   });
   const sources = [a(2), a(1)];
   const target = {
     number: 20, state: 'open', merged_at: null, merge_commit_sha: null, updated_at: recent,
-    user: { login: config.bot, type: 'Bot' }, base: { ref: 'main' },
+    user: { login: config.bot, type: 'Bot' }, base: { ref: options.branch || 'main' },
     head: { sha: head, ref: 'incoming/a-pr-2', repo: { full_name: config.target } },
     body: 'Maintainer notes, no bridge marker.', title: 'Maintainer custom title',
     html_url: `https://github.com/${config.target}/pull/20`,
@@ -56,6 +56,10 @@ function fixture(options = {}) {
     TRIGGER_SOURCE_REPO: config.source, TRIGGER_SOURCE_SHA: main,
     TRIGGER_SOURCE_RUN_ID: '11', TRIGGER_SOURCE_EVENT: 'issue_comment', TRIGGER_SOURCE_PR: '2',
   });
+  if (options.manual) Object.assign(env, {
+    TRIGGER_SOURCE_REPO: config.source, TRIGGER_SOURCE_SHA: options.submittedSha || sources.find(p => p.number === (options.pr || 2)).head.sha,
+    TRIGGER_SOURCE_RUN_ID: '11', TRIGGER_SOURCE_EVENT: 'workflow_dispatch', TRIGGER_SOURCE_PR: String(options.pr || 2),
+  });
   let fetched, mainSha = main, sourceReads = 0;
   const spawnImpl = (_command, raw) => {
     const args = raw.slice(4);
@@ -72,6 +76,11 @@ function fixture(options = {}) {
     if (args[0] === 'push') {
       pushes.push(args);
       if (options.pushFailure && args.at(-1).endsWith('a-pr-2')) status = 1;
+      if (status === 0 && args.at(-1).includes('incoming/a-pr-')) {
+        const n = Number(args.at(-1).match(/a-pr-(\d+)$/)[1]);
+        const existing = targets.find(p => p.head.ref === `incoming/a-pr-${n}`);
+        if (existing) existing.head.sha = args.at(-1).split(':')[0];
+      }
     }
     if (args[0] === 'diff' && options.workflowChange) stdout = '.github/workflows/unsafe.yml';
     return { stdout, stderr: '', status };
@@ -85,7 +94,17 @@ function fixture(options = {}) {
     });
     const repo = u.pathname.startsWith('/repos/A/') ? config.source : config.target;
     const path = u.pathname.slice(('/repos/' + repo).length), prs = repo === config.source ? sources : targets;
-    if (path === '/git/ref/heads/main') return reply({ object: { sha: mainSha } });
+    if (path === '' && repo === config.source) return reply({ id: 1000, full_name: repo, default_branch: 'main' });
+    if (path === '/actions/workflows/notify-controller.yml') return reply({ id: 99, path: '.github/workflows/notify-controller.yml' });
+    if (path === '/actions/runs/11') return reply({
+      id: 11, repository: { id: 1000, full_name: config.source }, head_repository: { id: 1000 },
+      workflow_id: 99, path: '.github/workflows/notify-controller.yml', event: 'workflow_dispatch', head_branch: 'main',
+      display_title: `Submit A PR #${env.TRIGGER_SOURCE_PR} at ${env.TRIGGER_SOURCE_SHA}`, run_attempt: 1,
+      actor: { id: 1, login: 'writer', type: 'User' }, triggering_actor: { id: 1 },
+      status: 'completed', conclusion: 'success', created_at: recent,
+    });
+    if (path === '/collaborators/writer/permission') return reply({ permission: 'write' });
+    if (path === '/git/ref/heads/' + (options.branch || 'main')) return reply({ object: { sha: mainSha } });
     if (path === '/pulls' && method === 'GET') {
       let items = prs.filter(p => u.searchParams.get('state') === 'all' || p.state === u.searchParams.get('state'));
       if (u.searchParams.has('head')) items = items.filter(p => u.searchParams.get('head').endsWith(':' + p.head.ref));
@@ -101,6 +120,7 @@ function fixture(options = {}) {
     if (pr) {
       const p = prs.find(p => p.number === Number(pr[1]));
       if (repo === config.source && p.number === 2 && method === 'GET' && ++sourceReads === 2 && options.newerBeforeClose) p.head.sha = rewritten;
+      if (repo === config.source && p.number === 2 && method === 'GET' && sourceReads === 4 && options.newerBeforeTransport) p.head.sha = second;
       if (method === 'PATCH') Object.assign(p, body);
       return reply(p);
     }
@@ -126,7 +146,7 @@ function fixture(options = {}) {
   return {
     calls, pushes, sources, targets, comments, parents,
     advanceMain: () => { parents.set(sha('f'), [mainSha]); mainSha = sha('f'); },
-    run: () => runBridge({ config, env, fetchImpl, spawnImpl, now }),
+    run: () => runBridge({ config: { ...config, sourceBranch: options.branch || 'main', targetBranch: options.branch || 'main' }, env, fetchImpl, spawnImpl, now }),
   };
 }
 
@@ -139,7 +159,7 @@ test('tokens for multiple repositories or a different pair fail before any Git p
   }
 });
 test('branch identity recovers pairing after a maintainer edits the body; custom title/body are preserved', async () => {
-  const f = fixture(), before = structuredClone(f.targets[0]);
+  const f = fixture({ manual: true, pr: 1 }), before = structuredClone(f.targets[0]);
   const r = await f.run();
   assert.equal(r.passed, true);
   assert.deepEqual(r.pairs.map(p => [p.a, p.b, p.state]), [[2, 20, 'pending'], [1, 21, 'pending']]);
@@ -150,34 +170,34 @@ test('branch identity recovers pairing after a maintainer edits the body; custom
 test('B Update branch retains its additional commits without a backwards push', async () => {
   const f = fixture({ bAhead: true }), r = await f.run();
   assert.equal(r.passed, true);
-  assert.equal(r.pairs[0].state, 'pending');
+  assert.equal(r.pairs[0].state, 'awaiting-submission');
   assert.ok(!f.pushes.some(p => p.at(-1).endsWith('a-pr-2')));
 });
 test('normal source fast-forward still updates incoming', async () => {
-  const f = fixture({ sourceAhead: true }), r = await f.run();
+  const f = fixture({ sourceAhead: true, manual: true }), r = await f.run();
   assert.equal(r.passed, true);
   assert.ok(f.pushes.some(p => p.at(-1) === rewritten + ':refs/heads/incoming/a-pr-2'));
   assert.ok(f.pushes.every(p => !p.some(arg => arg.startsWith('--force'))));
 });
 test('rewritten A feature branch is blocked per pair without force-push or starving another PR', async () => {
-  const f = fixture({ diverged: true }), r = await f.run();
+  const f = fixture({ diverged: true, manual: true }), r = await f.run();
   assert.equal(r.passed, true);
   assert.equal(r.pairs[0].state, 'incoming-diverged');
-  assert.equal(r.pairs[1].state, 'pending');
+  assert.equal(r.pairs[1].state, 'awaiting-submission');
   assert.ok(!f.pushes.some(p => p.at(-1).endsWith('a-pr-2')));
 });
 test('oversized feedback does not prevent the next pair from being processed', async () => {
   const f = fixture({ oversizedReview: true }), r = await f.run();
   assert.equal(r.passed, false);
   assert.equal(r.pairs[0].state, 'error');
-  assert.equal(r.pairs[1].state, 'pending');
+  assert.equal(r.pairs[1].state, 'awaiting-submission');
   assert.match(f.comments.get(config.source + '#2')[0].body, /could not process/);
 });
 test('a Git transport failure is isolated to its pair and still fails the run visibly', async () => {
-  const f = fixture({ sourceAhead: true, pushFailure: true }), r = await f.run();
+  const f = fixture({ sourceAhead: true, pushFailure: true, manual: true }), r = await f.run();
   assert.equal(r.passed, false);
   assert.equal(r.pairs[0].state, 'error');
-  assert.equal(r.pairs[1].state, 'pending');
+  assert.equal(r.pairs[1].state, 'awaiting-submission');
 });
 test('B reopen while A is closed never causes the bot to close B again', async () => {
   const f = fixture({ sourceClosed: true }), r = await f.run();
@@ -225,7 +245,54 @@ test('an open A PR finds its B pair even if B rejected it outside the history wi
   assert.equal(f.sources[0].state, 'closed');
 });
 test('workflow-changing contribution stays blocked', async () => {
-  const f = fixture({ workflowChange: true }), r = await f.run();
-  assert.ok(r.pairs.every(p => p.state === 'blocked-workflow-change'));
+  const f = fixture({ workflowChange: true, manual: true, pr: 1 }), r = await f.run();
+  assert.equal(r.pairs.find(p => p.a === 1).state, 'blocked-workflow-change');
   assert.equal(f.pushes.length, 0);
+});
+
+
+test('schedule and old A events never transfer new PRs or unsubmitted revisions', async () => {
+  for (const options of [{}, { sourceAhead: true }, { sourceAhead: true, event: true }]) {
+    const f = fixture(options), r = await f.run();
+    assert.equal(r.passed, true);
+    assert.equal(f.pushes.length, 0);
+    assert.equal(f.targets.length, 1);
+    assert.equal(f.targets[0].head.sha, head);
+    assert.equal(r.pairs.find(p => p.a === 1).state, 'awaiting-submission');
+  }
+});
+test('stale manual SHA fails before Git or comment mutations', async () => {
+  const f = fixture({ manual: true, sourceAhead: true, submittedSha: head }), r = await f.run();
+  assert.equal(r.passed, false);
+  assert.match(r.error, /stale/);
+  assert.equal(f.pushes.length, 0);
+  assert.ok(f.calls.every(c => c.method === 'GET'));
+});
+test('a manual submission sends only its selected revision and is idempotent', async () => {
+  const f = fixture({ manual: true, sourceAhead: true });
+  assert.equal((await f.run()).passed, true);
+  assert.equal(f.pushes.length, 1);
+  assert.equal(f.targets[0].head.sha, rewritten);
+  assert.equal((await f.run()).passed, true);
+  assert.equal(f.pushes.length, 1);
+  assert.equal(f.targets.length, 1);
+});
+test('B rejecting a submitted revision does not close newer unsent work at A', async () => {
+  const f = fixture({ oldRejected: true, sourceAhead: true }), r = await f.run();
+  assert.equal(r.passed, true);
+  assert.equal(f.sources[0].state, 'open');
+  assert.equal(f.pushes.length, 0);
+});
+
+test('a PR advancing immediately before transport fails without sending its newer head', async () => {
+  const f = fixture({ manual: true, sourceAhead: true, newerBeforeTransport: true }), r = await f.run();
+  assert.equal(r.passed, false);
+  assert.equal(f.pushes.length, 0);
+  assert.equal(f.targets[0].head.sha, head);
+});
+test('registered dev pair transports to B/dev while manual notifier runs on default main', async () => {
+  const f = fixture({ manual: true, pr: 1, branch: 'dev' }), r = await f.run();
+  assert.equal(r.passed, true, r.error);
+  assert.equal(f.targets[1].base.ref, 'dev');
+  assert.ok(f.calls.some(c => c.path === '/repos/A/repo/git/ref/heads/dev'));
 });

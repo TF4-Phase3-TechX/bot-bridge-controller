@@ -36,7 +36,7 @@ test('repository ownership is unambiguous, including casing and controller overl
 });
 test('pair config passes only its endpoints and the shared three-app setup', () => {
   assert.deepEqual(pairConfig(registry(), 'pair-7'), {
-    source: 'A/repo-7', target: 'B/repo-7', controllerRepo: 'B/controller', bot: 'transport[bot]', sourceBot: 'sync[bot]',
+    source: 'A/repo-7', target: 'B/repo-7', sourceBranch: 'main', targetBranch: 'main', controllerRepo: 'B/controller', bot: 'transport[bot]', sourceBot: 'sync[bot]',
   });
   assert.throws(() => pairConfig(registry(), 'unregistered'));
 });

@@ -16,6 +16,9 @@ export function validateConfig(value) {
     if (!pair || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(pair.id ?? '') || ids.has(pair.id)
       || !repo.test(pair.source ?? '') || !repo.test(pair.target ?? '')) throw new Error('Invalid or duplicate pair');
     ids.add(pair.id);
+    for (const branch of [pair.sourceBranch ?? 'main', pair.targetBranch ?? 'main']) {
+      if (!['main', 'dev'].includes(branch)) throw new Error('Unsupported contribution branch');
+    }
     for (const name of [pair.source, pair.target]) {
       if (repos.has(name.toLowerCase())) throw new Error('A repository may belong to only one pair; controller must remain separate');
       repos.add(name.toLowerCase());
@@ -32,7 +35,7 @@ export function pairConfig(registry, id) {
   validateConfig(registry);
   const pair = registry.pairs.find(p => p.id === id);
   if (!pair) throw new Error('Unknown bridge pair');
-  return { source: pair.source, target: pair.target, controllerRepo: registry.controllerRepo, bot: registry.bot, sourceBot: registry.sourceBot };
+  return { source: pair.source, target: pair.target, sourceBranch: pair.sourceBranch ?? 'main', targetBranch: pair.targetBranch ?? 'main', controllerRepo: registry.controllerRepo, bot: registry.bot, sourceBot: registry.sourceBot };
 }
 
 export function planPairs(registry, env = {}) {

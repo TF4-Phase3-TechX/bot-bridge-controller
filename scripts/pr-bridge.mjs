@@ -159,17 +159,30 @@ async function run() {
     if (fetched !== aHead) { report.pairs.push({ a: a.number, state: 'source-changed-retry' }); continue; }
     const included = ancestor(aHead, bSha);
     if (b) {
-      const decision = pairDecision({ merged: Boolean(b.merged_at), closed: b.state === 'closed', sourceClosed: a.state === 'closed', headIncluded: included });
+      // merge_commit_sha is the squash commit or final rebased commit for those methods.
+      // If a merge happened after our B/main snapshot, defer closure until the next run.
+      const mergeResultIncluded = Boolean(b.merged_at) && shaPattern.test(b.merge_commit_sha ?? '')
+        && git(['cat-file', '-e', `${b.merge_commit_sha}^{commit}`], null, [0, 1, 128]).status === 0
+        && ancestor(b.merge_commit_sha, bSha);
+      const decision = pairDecision({
+        merged: Boolean(b.merged_at), closed: b.state === 'closed', sourceClosed: a.state === 'closed',
+        headIncluded: included, mergeResultIncluded, sourceHead: aHead, mergedHead: b.head.sha,
+      });
       if (decision !== 'pending') {
-        const row = { a: a.number, b: b.number, state: decision, sourceHead: aHead, mergeCommit: b.merge_commit_sha };
+        const acceptedVia = decision === 'accepted' ? (included ? 'source-ancestry' : 'merged-pr-head') : null;
+        const row = { a: a.number, b: b.number, state: decision, sourceHead: aHead, mergedHead: b.head.sha, mergeCommit: b.merge_commit_sha, mergeResultIncluded, acceptedVia };
         report.pairs.push(row);
         if (decision === 'withdrawn') {
           await api(target, `/pulls/${b.number}`, { method: 'PATCH', body: { state: 'closed' } });
         }
         const message = decision === 'accepted'
-          ? `Accepted in [B PR #${b.number}](${b.html_url}).\n\nB merge commit: \`${b.merge_commit_sha}\`.\n\nA/main synchronized to B/main: \`${bSha}\`. Original source head \`${aHead}\` is included; no independent merge was performed at A.`
+          ? `Accepted in [B PR #${b.number}](${b.html_url}).\n\nB merge result: \`${b.merge_commit_sha}\`, verified in B/main.\n\nA/main synchronized to B/main: \`${bSha}\`.\n\n${included
+            ? `Original source head \`${aHead}\` is included in accepted history.`
+            : `Source head \`${aHead}\` matches the head recorded on the merged B PR. B rewrote the commit history (squash/rebase); original source SHAs need not exist in main. A PR is closed as accepted, not independently merged.`}\n\nNo independent merge was performed at A.`
           : decision === 'new-commits-pending'
             ? `B merged [PR #${b.number}](${b.html_url}), but current A head \`${aHead}\` contains unaccepted commits. Main is synchronized only to accepted B history. Submit the remaining changes in a new PR from current main; this PR is not marked complete.`
+            : decision === 'merge-result-not-in-main'
+              ? `B merged [PR #${b.number}](${b.html_url}), but its merge result \`${b.merge_commit_sha}\` is not in the B/main snapshot \`${bSha}\` synchronized by this run. This PR is not marked complete; retry against current B/main or inspect a history rewrite.`
             : `Bridge status: **${decision}**. [B PR #${b.number}](${b.html_url}). No unaccepted code is added to either main; this pair will not be recreated automatically.`;
         await statusComment(a.number, message);
         // Refresh immediately before closing, so a newer source head is not silently discarded.
@@ -193,7 +206,7 @@ async function run() {
       assertPush({ repo: target, source, target, ref: `refs/heads/${branch}` });
       git(['push', bUrl, `${aHead}:refs/heads/${branch}`], targetToken);
     }
-    const body = `${marker}\nContribution from [A PR #${a.number}](${a.html_url}).\n\nSource head: \`${aHead}\`.\n\nB is the source of truth. Review and merge here with a merge commit. The controller will synchronize A/main to the accepted B history and complete the source PR. Original Git commits are transported unchanged.`;
+    const body = `${marker}\nContribution from [A PR #${a.number}](${a.html_url}).\n\nSource head: \`${aHead}\`.\n\nB is the source of truth. Maintainers may merge, squash, or rebase here. The controller synchronizes A/main to accepted B history and closes the accepted source PR. Transport preserves source commits; squash/rebase at B rewrites their SHAs.`;
     if (!b) {
       b = await api(target, '/pulls', { method: 'POST', body: { title: `A PR #${a.number}: ${a.title}`, head: branch, base: 'main', body } });
       await syncConversation(a.number, b.number);

@@ -5,7 +5,7 @@ export function textBlock(value) {
   const fence = '`'.repeat(longest + 1);
   return `${fence}text\n${text}\n${fence}`;
 }
-const wrapProse = value => String(value ?? '').split('\n').map(line => {
+export const wrapProse = value => String(value ?? '').split('\n').map(line => {
   const lines = [];
   while (line.length > 88) {
     const split = line.lastIndexOf(' ', 88);

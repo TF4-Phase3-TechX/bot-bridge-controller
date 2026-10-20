@@ -3,6 +3,22 @@ export function mainSyncDecision({ equal, aIsAncestor }) {
   return aIsAncestor ? 'fast-forward' : 'stop';
 }
 
+export function notificationMetadata({ source, target, repo, sha, runId, event, pr }) {
+  if (![repo, sha, runId, event, pr].some(Boolean)) return null;
+  if (![source, target].includes(repo) || !/^[a-f0-9]{40}$/.test(sha ?? '') || !/^[1-9][0-9]*$/.test(runId ?? '')) {
+    throw new Error('Invalid notification metadata');
+  }
+  // Accept existing B/main notifications while the notifier is being upgraded.
+  const kind = event || (repo === target ? 'push' : '');
+  if (!['push', 'pull_request_target', 'issue_comment', 'pull_request_review', 'pull_request_review_comment'].includes(kind)) {
+    throw new Error('Invalid notification event');
+  }
+  if (kind === 'push' ? repo !== target || Boolean(pr) : !/^[1-9][0-9]*$/.test(pr ?? '')) {
+    throw new Error('Invalid notification PR scope');
+  }
+  return { repository: repo, sha, event: kind, pr: pr || null, run: `https://github.com/${repo}/actions/runs/${runId}` };
+}
+
 export function pairDecision({ merged, closed, sourceClosed, headIncluded }) {
   if (merged) return headIncluded ? 'accepted' : 'new-commits-pending';
   if (closed) return 'rejected';

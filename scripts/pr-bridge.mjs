@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
-import { mainSyncDecision, pairDecision, assertMutation, assertPush } from './pr-bridge-policy.mjs';
+import { mainSyncDecision, pairDecision, assertMutation, assertPush, notificationMetadata } from './pr-bridge-policy.mjs';
 import { reviewFeedback, reviewSummary } from './pr-bridge-reviews.mjs';
 import { conversationCopies } from './pr-bridge-comments.mjs';
 
@@ -104,11 +104,10 @@ async function syncConversation(aPr, bPr) {
 const conversationPermissions = new Map();
 async function run() {
   if (process.env.GITHUB_REPOSITORY !== controllerRepo || process.env.GITHUB_REF !== 'refs/heads/main') throw new Error('Controller must run from isolated controller main');
-  const triggerRepo = process.env.TRIGGER_SOURCE_REPO, triggerSha = process.env.TRIGGER_SOURCE_SHA, triggerRun = process.env.TRIGGER_SOURCE_RUN_ID;
-  if (triggerRepo || triggerSha || triggerRun) {
-    if (triggerRepo !== target || !shaPattern.test(triggerSha ?? '') || !/^\d+$/.test(triggerRun ?? '')) throw new Error('Invalid notification metadata');
-    report.trigger = { repository: triggerRepo, sha: triggerSha, run: `https://github.com/${target}/actions/runs/${triggerRun}` };
-  }
+  report.trigger = notificationMetadata({
+    source, target, repo: process.env.TRIGGER_SOURCE_REPO, sha: process.env.TRIGGER_SOURCE_SHA,
+    runId: process.env.TRIGGER_SOURCE_RUN_ID, event: process.env.TRIGGER_SOURCE_EVENT, pr: process.env.TRIGGER_SOURCE_PR,
+  });
   if (!sourceToken || !targetToken) throw new Error('Missing scoped tokens');
   for (const [token, expected] of [[sourceToken, source], [targetToken, target]]) {
     const response = await fetch('https://api.github.com/installation/repositories', {
@@ -204,7 +203,7 @@ try { await run(); report.passed = true; }
 catch (error) { report.passed = false; report.error = error.message; process.exitCode = 1; }
 finally {
   const summary = ['# B-authoritative PR bridge', '', `Result: **${report.passed ? 'PASS' : 'FAIL'}**`, '',
-    report.trigger ? `Triggered by [B/main push workflow](${report.trigger.run}) for commit \`${report.trigger.sha}\`. Reconciliation uses the current B/main ref, not a caller-supplied commit.\n` : '',
+    report.trigger ? `Triggered by [${report.trigger.repository} / ${report.trigger.event}${report.trigger.pr ? ` / PR #${report.trigger.pr}` : ''}](${report.trigger.run}) at event SHA \`${report.trigger.sha}\`. Reconciliation reads current PRs and B/main; event metadata is not an instruction to merge or update a supplied ref.\n` : '',
     `A/main before: \`${report.sourceBefore ?? 'unknown'}\``, `B/main: \`${report.targetMain ?? 'unknown'}\``,
     `A/main after: \`${report.sourceAfter ?? 'unknown'}\``, `Main sync: **${report.mainSync ?? 'not-started'}**`, '',
     '| A PR | B PR | State | Source head |', '|---|---|---|---|',

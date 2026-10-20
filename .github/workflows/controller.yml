@@ -1,5 +1,5 @@
 name: Isolated bridge - B decides
-run-name: ${{ inputs.source_sha && format('Reconcile B main {0}', inputs.source_sha) || 'Isolated bridge - B decides' }}
+run-name: ${{ inputs.source_repo && format('Reconcile {0} {1} PR {2}', inputs.source_repo, inputs.source_event || 'push', inputs.source_pr || '-') || 'Isolated bridge - B decides' }}
 on:
   workflow_dispatch:
     inputs:
@@ -8,11 +8,19 @@ on:
         required: false
         type: string
       source_sha:
-        description: B main push SHA for traceability; controller reads actual B main
+        description: Event SHA for traceability; controller reads actual PRs and B main
         required: false
         type: string
       source_run_id:
         description: B notification workflow run ID
+        required: false
+        type: string
+      source_event:
+        description: Notification event type
+        required: false
+        type: string
+      source_pr:
+        description: PR number for PR and comment events
         required: false
         type: string
   schedule:
@@ -77,4 +85,6 @@ jobs:
           TRIGGER_SOURCE_REPO: ${{ inputs.source_repo }}
           TRIGGER_SOURCE_SHA: ${{ inputs.source_sha }}
           TRIGGER_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          TRIGGER_SOURCE_EVENT: ${{ inputs.source_event }}
+          TRIGGER_SOURCE_PR: ${{ inputs.source_pr }}
         run: node scripts/pr-bridge.mjs

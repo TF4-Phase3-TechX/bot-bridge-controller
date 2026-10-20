@@ -1,0 +1,63 @@
+name: Isolated bridge - B decides
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: isolated-bridge-${{ github.event_name == 'pull_request' && github.event.number || 'main' }}
+  cancel-in-progress: false
+
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - run: node --check scripts/pr-bridge.mjs && node --test tests/*.test.mjs
+  reconcile:
+    if: vars.BRIDGE_ENABLED == 'true' && github.repository == 'TF4-Phase3-TechX/bot-bridge-controller' && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    needs: policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted controller only
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Token scoped only to repo A
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510
+        id: source
+        with:
+          client-id: ${{ vars.SOURCE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.SOURCE_APP_PRIVATE_KEY }}
+          owner: Vihnnnn
+          repositories: bot-bridge-lab
+          permission-contents: write
+          permission-pull-requests: write
+          permission-workflows: write
+      - name: Token scoped only to repo B without Workflows write
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510
+        id: target
+        with:
+          client-id: ${{ vars.BRIDGE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BRIDGE_APP_PRIVATE_KEY }}
+          owner: TF4-Phase3-TechX
+          repositories: bot-bridge-lab
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Transfer PRs and fast-forward A from accepted B main
+        env:
+          SOURCE_TOKEN: ${{ steps.source.outputs.token }}
+          BRIDGE_APP_TOKEN: ${{ steps.target.outputs.token }}
+        run: node scripts/pr-bridge.mjs

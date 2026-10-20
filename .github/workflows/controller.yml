@@ -1,6 +1,20 @@
 name: Isolated bridge - B decides
+run-name: ${{ inputs.source_sha && format('Reconcile B main {0}', inputs.source_sha) || 'Isolated bridge - B decides' }}
 on:
   workflow_dispatch:
+    inputs:
+      source_repo:
+        description: Repository that requested reconciliation
+        required: false
+        type: string
+      source_sha:
+        description: B main push SHA for traceability; controller reads actual B main
+        required: false
+        type: string
+      source_run_id:
+        description: B notification workflow run ID
+        required: false
+        type: string
   schedule:
     - cron: '7,22,37,52 * * * *'
   push:
@@ -60,4 +74,7 @@ jobs:
         env:
           SOURCE_TOKEN: ${{ steps.source.outputs.token }}
           BRIDGE_APP_TOKEN: ${{ steps.target.outputs.token }}
+          TRIGGER_SOURCE_REPO: ${{ inputs.source_repo }}
+          TRIGGER_SOURCE_SHA: ${{ inputs.source_sha }}
+          TRIGGER_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
         run: node scripts/pr-bridge.mjs

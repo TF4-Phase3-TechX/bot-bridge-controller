@@ -104,6 +104,11 @@ async function syncConversation(aPr, bPr) {
 const conversationPermissions = new Map();
 async function run() {
   if (process.env.GITHUB_REPOSITORY !== controllerRepo || process.env.GITHUB_REF !== 'refs/heads/main') throw new Error('Controller must run from isolated controller main');
+  const triggerRepo = process.env.TRIGGER_SOURCE_REPO, triggerSha = process.env.TRIGGER_SOURCE_SHA, triggerRun = process.env.TRIGGER_SOURCE_RUN_ID;
+  if (triggerRepo || triggerSha || triggerRun) {
+    if (triggerRepo !== target || !shaPattern.test(triggerSha ?? '') || !/^\d+$/.test(triggerRun ?? '')) throw new Error('Invalid notification metadata');
+    report.trigger = { repository: triggerRepo, sha: triggerSha, run: `https://github.com/${target}/actions/runs/${triggerRun}` };
+  }
   if (!sourceToken || !targetToken) throw new Error('Missing scoped tokens');
   for (const [token, expected] of [[sourceToken, source], [targetToken, target]]) {
     const response = await fetch('https://api.github.com/installation/repositories', {
@@ -199,6 +204,7 @@ try { await run(); report.passed = true; }
 catch (error) { report.passed = false; report.error = error.message; process.exitCode = 1; }
 finally {
   const summary = ['# B-authoritative PR bridge', '', `Result: **${report.passed ? 'PASS' : 'FAIL'}**`, '',
+    report.trigger ? `Triggered by [B/main push workflow](${report.trigger.run}) for commit \`${report.trigger.sha}\`. Reconciliation uses the current B/main ref, not a caller-supplied commit.\n` : '',
     `A/main before: \`${report.sourceBefore ?? 'unknown'}\``, `B/main: \`${report.targetMain ?? 'unknown'}\``,
     `A/main after: \`${report.sourceAfter ?? 'unknown'}\``, `Main sync: **${report.mainSync ?? 'not-started'}**`, '',
     '| A PR | B PR | State | Source head |', '|---|---|---|---|',

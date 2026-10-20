@@ -213,7 +213,7 @@ async function run() {
         report.pairs.push({ a: a.number, b: b.number, state: 'target-changed-retry' }); continue;
       }
       const sourceIncludedInBHead = ancestor(aHead, b.head.sha);
-      // If a merge happened after our B/main snapshot, defer closure until the next run.
+      // If a merge happened after our B/${targetBranch} snapshot, defer closure until the next run.
       const mergeResultIncluded = Boolean(b.merged_at) && shaPattern.test(b.merge_commit_sha ?? '')
         && git(['cat-file', '-e', `${b.merge_commit_sha}^{commit}`], null, [0, 1, 128]).status === 0
         && ancestor(b.merge_commit_sha, bSha);
@@ -228,13 +228,13 @@ async function run() {
           await statusComment(b.number, `A PR #${a.number} is closed${a.merged_at ? ' (merged at A outside the contribution flow)' : ''}. B still decides whether this contribution is accepted or rejected. This bot will not close or reopen this B PR. Reopen A if further contribution is needed.`, target, a.number);
         }
         const message = decision === 'accepted'
-          ? `Accepted in [B PR #${b.number}](${b.html_url}).\n\nB merge result: \`${b.merge_commit_sha}\`, verified in B/main and synchronized to A/main.\n\nOriginal source head \`${aHead}\` is included in accepted history; original commit identities are preserved.\n\nNo independent merge was performed at A.`
+          ? `Accepted in [B PR #${b.number}](${b.html_url}).\n\nB merge result: \`${b.merge_commit_sha}\`, verified in B/${targetBranch} and synchronized to A/${sourceBranch}.\n\nOriginal source head \`${aHead}\` is included in accepted history; original commit identities are preserved.\n\nNo independent merge was performed at A.`
           : decision === 'identity-not-preserved'
-            ? `Identity constraint not satisfied for [B PR #${b.number}](${b.html_url}): original source head \`${aHead}\` is missing from B/main. Use Create a merge commit; squash/rebase are unsupported. A/main still follows B/main, but this contribution is not marked accepted and no open A PR is closed by this decision. Maintainer must inspect the rewritten history.`
+            ? `Identity constraint not satisfied for [B PR #${b.number}](${b.html_url}): original source head \`${aHead}\` is missing from B/${targetBranch}. Use Create a merge commit; squash/rebase are unsupported. A/${sourceBranch} still follows B/${targetBranch}, but this contribution is not marked accepted and no open A PR is closed by this decision. Maintainer must inspect the rewritten history.`
           : decision === 'new-commits-pending'
             ? `B merged [PR #${b.number}](${b.html_url}), but current A head \`${aHead}\` contains unaccepted commits. Main is synchronized only to accepted B history. Submit the remaining changes in a new PR from current main; this PR is not marked complete.`
             : decision === 'merge-result-not-in-main'
-              ? `B merged [PR #${b.number}](${b.html_url}), but its merge result \`${b.merge_commit_sha}\` is not in the B/main snapshot \`${bSha}\` synchronized by this run. This PR is not marked complete; retry against current B/main or inspect a history rewrite.`
+              ? `B merged [PR #${b.number}](${b.html_url}), but its merge result \`${b.merge_commit_sha}\` is not in the B/${targetBranch} snapshot \`${bSha}\` synchronized by this run. This PR is not marked complete; retry against current B/${targetBranch} or inspect a history rewrite.`
             : decision === 'source-closed'
               ? `A PR is closed; [B PR #${b.number}](${b.html_url}) remains under B's control. No merge or closure is performed at B. Reopen A if further contribution is needed.`
               : `Bridge status: **${decision}**. [B PR #${b.number}](${b.html_url}). No unaccepted code is added to either main; this pair will not be recreated automatically.`;
@@ -248,7 +248,7 @@ async function run() {
         continue;
       }
       if (isSelected(a) && !sourceIncludedInBHead && !ancestor(b.head.sha, aHead)) {
-        await statusComment(a.number, `Blocked: incoming branch on [B PR #${b.number}](${b.html_url}) diverged from A head \`${aHead}\`. B changes are preserved; no force-push is performed. Coordinate with B or open a new A PR from current A/main. Other PRs continue processing.`);
+        await statusComment(a.number, `Blocked: incoming branch on [B PR #${b.number}](${b.html_url}) diverged from A head \`${aHead}\`. B changes are preserved; no force-push is performed. Coordinate with B or open a new A PR from current A/${sourceBranch}. Other PRs continue processing.`);
         report.pairs.push({ a: a.number, b: b.number, state: 'incoming-diverged', sourceHead: aHead }); continue;
       }
     }
@@ -257,7 +257,7 @@ async function run() {
       continue;
     }
     if (a.state !== 'open' || a.draft) continue;
-    if (included) { await statusComment(a.number, `Source head \`${aHead}\` is already in B/main. No new destination PR is needed.`); continue; }
+    if (included) { await statusComment(a.number, `Source head \`${aHead}\` is already in B/${targetBranch}. No new destination PR is needed.`); continue; }
     const baseSha = git(['merge-base', aHead, bSha]).text;
     if (git(['diff', '--name-only', baseSha, aHead, '--', '.github/workflows/']).text) {
       await statusComment(a.number, 'Blocked: contribution changes workflow files. Maintainer B must handle workflow changes separately; no branch update was sent.');
@@ -272,7 +272,7 @@ async function run() {
       assertPush({ repo: target, source, target, ref: `refs/heads/${branch}` });
       git(['push', bUrl, `${aHead}:refs/heads/${branch}`], targetToken);
     }
-    const body = `${marker}\nContribution from [A PR #${a.number}](${a.html_url}).\n\nInitial source head: \`${aHead}\`. Further updates require a new manual submission with an exact PR head SHA; schedule/events never publish newer A commits.\n\n### Merge instruction: preserve contributor identity\n\nPlease select **Create a merge commit** for this contribution. Do not squash or rebase this PR: original commit SHAs, authors and committers must be preserved. This is an instruction to the maintainer, not a restriction enforced by repository settings or branch protection.\n\nB is the source of truth. The controller synchronizes A/main to B/main and closes the accepted source PR only when its original head and B merge result are in main. If original commits are missing, the controller reports the identity issue; it cannot undo a merge or restore identity merely by synchronizing main.`;
+    const body = `${marker}\nContribution from [A PR #${a.number}](${a.html_url}).\n\nInitial source head: \`${aHead}\`. Further updates require a new manual submission with an exact PR head SHA; schedule/events never publish newer A commits.\n\n### Merge instruction: preserve contributor identity\n\nPlease select **Create a merge commit** for this contribution. Do not squash or rebase this PR: original commit SHAs, authors and committers must be preserved. This is an instruction to the maintainer, not a restriction enforced by repository settings or branch protection.\n\nB is the source of truth. The controller synchronizes A/${sourceBranch} to B/${targetBranch} and closes the accepted source PR only when its original head and B merge result are in main. If original commits are missing, the controller reports the identity issue; it cannot undo a merge or restore identity merely by synchronizing main.`;
     if (!b) {
       b = await api(target, '/pulls', { method: 'POST', body: { title: `A PR #${a.number}: ${a.title}`, head: branch, base: targetBranch, body } });
       await syncConversation(a.number, b.number);
@@ -294,9 +294,9 @@ finally {
     report.trigger ? `Triggered by [${report.trigger.repository} / ${report.trigger.event}${report.trigger.pr ? ` / PR #${report.trigger.pr}` : ''}](${report.trigger.run}) at SHA \`${report.trigger.sha}\`. Only a verified A manual submission may transfer this exact revision; other events never transfer newer source code.\n` : '',
     `A/${sourceBranch} before: \`${report.sourceBefore ?? 'unknown'}\``, `B/${targetBranch}: \`${report.targetMain ?? 'unknown'}\``,
     `A/${sourceBranch} after: \`${report.sourceAfter ?? 'unknown'}\``, `Main sync: **${report.mainSync ?? 'not-started'}**`, '',
-    report.recoveryRef ? `Previous A/main preserved at \`${report.recoveryRef}\` before replacement.\n` : '',
+    report.recoveryRef ? `Previous A/${sourceBranch} preserved at \`${report.recoveryRef}\` before replacement.\n` : '',
     '| A PR | B PR | State | Source head |', '|---|---|---|---|',
-    ...report.pairs.map(p => `| [#${p.a}](https://github.com/${source}/pull/${p.a}) | ${p.b ? `[#${p.b}](https://github.com/${target}/pull/${p.b})` : 'â€”'} | ${p.state} | \`${p.sourceHead ?? ''}\` |`),
+    ...report.pairs.map(p => `| [#${p.a}](https://github.com/${source}/pull/${p.a}) | ${p.b ? `[#${p.b}](https://github.com/${target}/pull/${p.b})` : '—'} | ${p.state} | \`${p.sourceHead ?? ''}\` |`),
     report.error ? `\nStopped: ${report.error}` : '', ''].join('\n');
   if (env.GITHUB_STEP_SUMMARY) appendFileSync(env.GITHUB_STEP_SUMMARY, summary);
 }

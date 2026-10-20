@@ -81,7 +81,7 @@ function fixture(options = {}) {
     calls.push({ path: u.pathname, query: u.search, method, body });
     const reply = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => structuredClone(data) });
     if (u.pathname === '/installation/repositories') return reply({
-      total_count: 1, repositories: [{ full_name: opts.headers.Authorization.endsWith('fake-A') ? config.source : config.target, private: true }],
+      total_count: options.broadToken ? 2 : 1, repositories: [{ full_name: options.wrongRepoToken ? 'Other/repo' : opts.headers.Authorization.endsWith('fake-A') ? config.source : config.target, private: true }],
     });
     const repo = u.pathname.startsWith('/repos/A/') ? config.source : config.target;
     const path = u.pathname.slice(('/repos/' + repo).length), prs = repo === config.source ? sources : targets;
@@ -130,6 +130,14 @@ function fixture(options = {}) {
   };
 }
 
+test('tokens for multiple repositories or a different pair fail before any Git push', async () => {
+  for (const option of [{ broadToken: true }, { wrongRepoToken: true }]) {
+    const f = fixture(option), r = await f.run();
+    assert.equal(r.passed, false);
+    assert.match(r.error, /exactly its private/);
+    assert.equal(f.pushes.length, 0);
+  }
+});
 test('branch identity recovers pairing after a maintainer edits the body; custom title/body are preserved', async () => {
   const f = fixture(), before = structuredClone(f.targets[0]);
   const r = await f.run();

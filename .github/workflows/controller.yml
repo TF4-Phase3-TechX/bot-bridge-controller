@@ -33,21 +33,46 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: isolated-bridge-${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'reconcile' || format('policy-{0}', github.event.pull_request.number || 'main') }}
-  cancel-in-progress: false
-
 jobs:
   policy:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    concurrency:
+      group: bridge-policy-${{ github.event.pull_request.number || 'main' }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           persist-credentials: false
       - run: node --check scripts/pr-bridge.mjs && node --test tests/*.test.mjs
-  reconcile:
+  plan:
     if: vars.BRIDGE_ENABLED == 'true' && github.repository == 'TF4-Phase3-TechX/bot-bridge-controller' && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.pairs.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Select registered pairs without App secrets
+        id: pairs
+        env:
+          TRIGGER_SOURCE_REPO: ${{ inputs.source_repo }}
+          TRIGGER_SOURCE_SHA: ${{ inputs.source_sha }}
+          TRIGGER_SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          TRIGGER_SOURCE_EVENT: ${{ inputs.source_event }}
+          TRIGGER_SOURCE_PR: ${{ inputs.source_pr }}
+        run: node scripts/bridge-config.mjs
+  reconcile:
+    needs: plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    concurrency:
+      group: isolated-bridge-${{ matrix.id }}
+      cancel-in-progress: false
+    name: Reconcile ${{ matrix.id }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -65,8 +90,8 @@ jobs:
         with:
           client-id: ${{ vars.SOURCE_APP_CLIENT_ID }}
           private-key: ${{ secrets.SOURCE_APP_PRIVATE_KEY }}
-          owner: Vihnnnn
-          repositories: bot-bridge-lab
+          owner: ${{ matrix.sourceOwner }}
+          repositories: ${{ matrix.sourceRepo }}
           permission-contents: write
           permission-pull-requests: write
           permission-workflows: write
@@ -76,12 +101,13 @@ jobs:
         with:
           client-id: ${{ vars.BRIDGE_APP_CLIENT_ID }}
           private-key: ${{ secrets.BRIDGE_APP_PRIVATE_KEY }}
-          owner: TF4-Phase3-TechX
-          repositories: bot-bridge-lab
+          owner: ${{ matrix.targetOwner }}
+          repositories: ${{ matrix.targetRepo }}
           permission-contents: write
           permission-pull-requests: write
       - name: Transfer PRs and synchronize A to authoritative B main
         env:
+          BRIDGE_PAIR_ID: ${{ matrix.id }}
           SOURCE_TOKEN: ${{ steps.source.outputs.token }}
           BRIDGE_APP_TOKEN: ${{ steps.target.outputs.token }}
           TRIGGER_SOURCE_REPO: ${{ inputs.source_repo }}

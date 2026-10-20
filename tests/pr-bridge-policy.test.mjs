@@ -2,10 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mainSyncDecision, pairDecision } from '../scripts/pr-bridge-policy.mjs';
 
-test('only fast-forward accepted B history into A', () => {
+test('A main follows accepted B history including divergence recovery', () => {
   assert.equal(mainSyncDecision({ equal: true, aIsAncestor: true }), 'current');
   assert.equal(mainSyncDecision({ equal: false, aIsAncestor: true }), 'fast-forward');
-  assert.equal(mainSyncDecision({ equal: false, aIsAncestor: false }), 'stop');
+  assert.equal(mainSyncDecision({ equal: false, aIsAncestor: false }), 'replace-from-b');
 });
 test('a B merge does not accept newer unmerged A commits', () => {
   assert.equal(pairDecision({ merged: true, headIncluded: true }), 'accepted');

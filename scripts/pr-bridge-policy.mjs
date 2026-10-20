@@ -1,6 +1,20 @@
 export function mainSyncDecision({ equal, aIsAncestor }) {
   if (equal) return 'current';
-  return aIsAncestor ? 'fast-forward' : 'stop';
+  return aIsAncestor ? 'fast-forward' : 'replace-from-b';
+}
+
+export function mainSyncPush({ source, target, repo, before, accepted, replace }) {
+  if (repo !== source || source === target || ![before, accepted].every(s => /^[a-f0-9]{40}$/.test(s))) {
+    throw new Error('Invalid authoritative main sync');
+  }
+  const recovery = replace ? `refs/heads/recovery/a-main-${before}` : null;
+  const options = ['--atomic', `--force-with-lease=refs/heads/main:${before}`];
+  const refs = [`${accepted}:refs/heads/main`];
+  if (recovery) {
+    options.push(`--force-with-lease=${recovery}:`);
+    refs.unshift(`${before}:${recovery}`);
+  }
+  return { recovery, options, refs };
 }
 
 export function notificationMetadata({ source, target, repo, sha, runId, event, pr }) {
@@ -43,6 +57,7 @@ export function assertMutation({ repo, source, target, path, method, body }) {
 
 export function assertPush({ repo, source, target, ref }) {
   if (repo === source && ref === 'refs/heads/main') return;
+  if (repo === source && /^refs\/heads\/recovery\/a-main-[a-f0-9]{40}$/.test(ref)) return;
   if (repo === target && /^refs\/heads\/incoming\/a-pr-[1-9][0-9]*$/.test(ref)) return;
   throw new Error('Push outside bridge policy');
 }

@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
-import { mainSyncDecision, pairDecision, assertMutation, assertPush, notificationMetadata } from './pr-bridge-policy.mjs';
+import { mainSyncDecision, mainSyncPush, pairDecision, assertMutation, assertPush, notificationMetadata } from './pr-bridge-policy.mjs';
 import { reviewFeedback, reviewSummary } from './pr-bridge-reviews.mjs';
 import { conversationCopies } from './pr-bridge-comments.mjs';
 
@@ -29,7 +29,7 @@ function git(args, token, allowed = [0]) {
     env.GIT_CONFIG_VALUE_1 = `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`;
   }
   const result = spawnSync('git', ['-c', 'credential.helper=', '-c', 'core.hooksPath=/dev/null', ...args], { env, encoding: 'utf8' });
-  if (!allowed.includes(result.status)) throw new Error(`Git ${args[0]} failed (exit ${result.status}); no force update attempted`);
+  if (!allowed.includes(result.status)) throw new Error(`Git ${args[0]} failed (exit ${result.status}); inspect permissions, branch rules and concurrent ref changes`);
   return { text: result.stdout.trim(), status: result.status };
 }
 const ancestor = (a, b) => git(['merge-base', '--is-ancestor', requireSha(a), requireSha(b)], null, [0, 1]).status === 0;
@@ -124,11 +124,16 @@ async function run() {
   const bSha = git(['rev-parse', 'refs/remotes/bridge/b-main']).text;
   report.sourceBefore = aSha; report.targetMain = bSha;
   report.mainSync = mainSyncDecision({ equal: aSha === bSha, aIsAncestor: ancestor(aSha, bSha) });
-  if (report.mainSync === 'stop') throw new Error('A/main contains history not accepted by B. Maintainer reconciliation required.');
-  if (report.mainSync === 'fast-forward') {
+  if (report.mainSync !== 'current') {
     // Dedicated App A may copy workflow files already accepted by B; never execute them here.
+    // Read B again before writing; an older queued event must not dictate the target SHA.
+    if ((await api(target, '/git/ref/heads/main')).object.sha !== bSha) throw new Error('B main changed during fetch; retry using its latest history');
+    const plan = mainSyncPush({ source, target, repo: source, before: aSha, accepted: bSha, replace: report.mainSync === 'replace-from-b' });
     assertPush({ repo: source, source, target, ref: 'refs/heads/main' });
-    git(['push', aUrl, `${requireSha(bSha)}:refs/heads/main`], sourceToken);
+    if (plan.recovery) assertPush({ repo: source, source, target, ref: plan.recovery });
+    // Atomic backup + update: if either ref is rejected, neither changes.
+    git(['push', ...plan.options, aUrl, ...plan.refs], sourceToken);
+    report.recoveryRef = plan.recovery;
   }
   report.sourceAfter = (await api(source, '/git/ref/heads/main')).object.sha;
   if (report.sourceAfter !== bSha) throw new Error('A main changed concurrently; retry after inspection');
@@ -188,7 +193,7 @@ async function run() {
       assertPush({ repo: target, source, target, ref: `refs/heads/${branch}` });
       git(['push', bUrl, `${aHead}:refs/heads/${branch}`], targetToken);
     }
-    const body = `${marker}\nContribution from [A PR #${a.number}](${a.html_url}).\n\nSource head: \`${aHead}\`.\n\nB is the source of truth. Review and merge here with a merge commit. The controller will fast-forward A/main to the accepted B history and complete the source PR. Original Git commits are transported unchanged.`;
+    const body = `${marker}\nContribution from [A PR #${a.number}](${a.html_url}).\n\nSource head: \`${aHead}\`.\n\nB is the source of truth. Review and merge here with a merge commit. The controller will synchronize A/main to the accepted B history and complete the source PR. Original Git commits are transported unchanged.`;
     if (!b) {
       b = await api(target, '/pulls', { method: 'POST', body: { title: `A PR #${a.number}: ${a.title}`, head: branch, base: 'main', body } });
       await syncConversation(a.number, b.number);
@@ -206,6 +211,7 @@ finally {
     report.trigger ? `Triggered by [${report.trigger.repository} / ${report.trigger.event}${report.trigger.pr ? ` / PR #${report.trigger.pr}` : ''}](${report.trigger.run}) at event SHA \`${report.trigger.sha}\`. Reconciliation reads current PRs and B/main; event metadata is not an instruction to merge or update a supplied ref.\n` : '',
     `A/main before: \`${report.sourceBefore ?? 'unknown'}\``, `B/main: \`${report.targetMain ?? 'unknown'}\``,
     `A/main after: \`${report.sourceAfter ?? 'unknown'}\``, `Main sync: **${report.mainSync ?? 'not-started'}**`, '',
+    report.recoveryRef ? `Previous A/main preserved at \`${report.recoveryRef}\` before replacement.\n` : '',
     '| A PR | B PR | State | Source head |', '|---|---|---|---|',
     ...report.pairs.map(p => `| [#${p.a}](https://github.com/${source}/pull/${p.a}) | ${p.b ? `[#${p.b}](https://github.com/${target}/pull/${p.b})` : '—'} | ${p.state} | \`${p.sourceHead ?? ''}\` |`),
     report.error ? `\nStopped: ${report.error}` : '', ''].join('\n');

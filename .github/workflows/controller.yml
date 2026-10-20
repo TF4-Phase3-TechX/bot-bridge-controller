@@ -78,7 +78,7 @@ jobs:
           repositories: bot-bridge-lab
           permission-contents: write
           permission-pull-requests: write
-      - name: Transfer PRs and fast-forward A from accepted B main
+      - name: Transfer PRs and synchronize A to authoritative B main
         env:
           SOURCE_TOKEN: ${{ steps.source.outputs.token }}
           BRIDGE_APP_TOKEN: ${{ steps.target.outputs.token }}

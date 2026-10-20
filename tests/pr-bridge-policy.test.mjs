@@ -33,6 +33,13 @@ test('B rejection stays rejected instead of recreating a PR', () => {
   assert.equal(pairDecision({ merged: false, closed: true }), 'rejected');
 });
 test('withdrawal is distinct from acceptance', () => {
-  assert.equal(pairDecision({ sourceClosed: true }), 'withdrawn');
+  assert.equal(pairDecision({ sourceClosed: true }), 'source-closed');
   assert.equal(pairDecision({}), 'pending');
+});
+test('B update-branch followed by rewritten merge is an identity violation', () => {
+  assert.equal(pairDecision({ merged: true, mergeResultIncluded: true, sourceIncludedInBHead: true, headIncluded: false, sourceHead: 'a'.repeat(40), mergedHead: 'b'.repeat(40) }), 'identity-not-preserved');
+});
+test('reopening B does not infer a new rejection from closed A', () => {
+  assert.equal(pairDecision({ closed: true, sourceClosed: true }), 'rejected');
+  assert.equal(pairDecision({ closed: false, sourceClosed: true }), 'source-closed');
 });

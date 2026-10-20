@@ -1,5 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { mainSyncDecision, mainSyncPush, pairDecision, assertMutation, assertPush, notificationMetadata } from './pr-bridge-policy.mjs';
 import { reviewFeedback, reviewSummary } from './pr-bridge-reviews.mjs';
 import { conversationCopies } from './pr-bridge-comments.mjs';
@@ -9,26 +11,31 @@ const target = 'TF4-Phase3-TechX/bot-bridge-lab';
 const bot = 'techx-vihnnnn-bridge-lab[bot]';
 const sourceBot = 'techx-a-sync-lab[bot]';
 const controllerRepo = 'TF4-Phase3-TechX/bot-bridge-controller';
-const sourceToken = process.env.SOURCE_TOKEN;
-const targetToken = process.env.BRIDGE_APP_TOKEN;
-const report = { source, target, controller: controllerRepo, pairs: [], run: `https://github.com/${controllerRepo}/actions/runs/${process.env.GITHUB_RUN_ID}` };
+export async function runBridge({
+  config = { source, target, bot, sourceBot, controllerRepo },
+  env = process.env, fetchImpl = fetch, spawnImpl = spawnSync, now = Date.now(),
+} = {}) {
+const { source, target, bot, sourceBot, controllerRepo } = config;
+const sourceToken = env.SOURCE_TOKEN;
+const targetToken = env.BRIDGE_APP_TOKEN;
+const report = { source, target, controller: controllerRepo, pairs: [], run: `https://github.com/${controllerRepo}/actions/runs/${env.GITHUB_RUN_ID}` };
 const shaPattern = /^[a-f0-9]{40}$/;
 function requireSha(value) {
   if (!shaPattern.test(value)) throw new Error('Invalid commit SHA');
   return value;
 }
 function git(args, token, allowed = [0]) {
-  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
-  for (const key of Object.keys(env)) {
-    if (/TOKEN|PRIVATE_KEY|^GIT_TRACE|^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(key)) delete env[key];
+  const gitEnv = { ...env, GIT_TERMINAL_PROMPT: '0' };
+  for (const key of Object.keys(gitEnv)) {
+    if (/TOKEN|PRIVATE_KEY|^GIT_TRACE|^GIT_CONFIG_(COUNT|KEY_\d+|VALUE_\d+)$/.test(key)) delete gitEnv[key];
   }
   if (token) {
-    env.GIT_CONFIG_COUNT = '2';
-    env.GIT_CONFIG_KEY_0 = 'http.https://github.com/.extraheader'; env.GIT_CONFIG_VALUE_0 = '';
-    env.GIT_CONFIG_KEY_1 = 'http.https://github.com/.extraheader';
-    env.GIT_CONFIG_VALUE_1 = `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`;
+    gitEnv.GIT_CONFIG_COUNT = '2';
+    gitEnv.GIT_CONFIG_KEY_0 = 'http.https://github.com/.extraheader'; gitEnv.GIT_CONFIG_VALUE_0 = '';
+    gitEnv.GIT_CONFIG_KEY_1 = 'http.https://github.com/.extraheader';
+    gitEnv.GIT_CONFIG_VALUE_1 = `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`;
   }
-  const result = spawnSync('git', ['-c', 'credential.helper=', '-c', 'core.hooksPath=/dev/null', ...args], { env, encoding: 'utf8' });
+  const result = spawnImpl('git', ['-c', 'credential.helper=', '-c', 'core.hooksPath=/dev/null', ...args], { env: gitEnv, encoding: 'utf8' });
   if (!allowed.includes(result.status)) throw new Error(`Git ${args[0]} failed (exit ${result.status}); inspect permissions, branch rules and concurrent ref changes`);
   return { text: result.stdout.trim(), status: result.status };
 }
@@ -36,7 +43,7 @@ const ancestor = (a, b) => git(['merge-base', '--is-ancestor', requireSha(a), re
 async function api(repo, path, { method = 'GET', body } = {}) {
   assertMutation({ repo, source, target, path, method, body });
   const token = repo === source ? sourceToken : targetToken;
-  const response = await fetch(`https://api.github.com/repos/${repo}${path}`, {
+  const response = await fetchImpl(`https://api.github.com/repos/${repo}${path}`, {
     method, headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json', 'X-GitHub-Api-Version': '2022-11-28' },
     body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(30000),
   });
@@ -51,13 +58,13 @@ async function list(repo, path) {
     if (batch.length < 100) return values;
   }
 }
-async function statusComment(pr, content) {
-  const marker = '<!-- b-authoritative-bridge-status -->';
+async function statusComment(pr, content, repo = source, aPr = pr) {
+  const marker = repo === source ? '<!-- b-authoritative-bridge-status -->' : `<!-- bridge-source-status:${source}#${aPr} -->`;
   const body = `${marker}\n${content}`;
-  const comments = await list(source, `/issues/${pr}/comments`);
-  const old = comments.find(x => x.user.login === sourceBot && x.body.startsWith(marker));
+  const comments = await list(repo, `/issues/${pr}/comments`);
+  const old = comments.find(x => x.user.login === (repo === source ? sourceBot : bot) && x.body.startsWith(marker));
   if (old?.body === body) return;
-  await api(source, old ? `/issues/comments/${old.id}` : `/issues/${pr}/comments`, { method: old ? 'PATCH' : 'POST', body: { body } });
+  await api(repo, old ? `/issues/comments/${old.id}` : `/issues/${pr}/comments`, { method: old ? 'PATCH' : 'POST', body: { body } });
 }
 async function syncReviewFeedback(aPr, bPr) {
   const reviews = await list(target, `/pulls/${bPr}/reviews`);
@@ -102,15 +109,28 @@ async function syncConversation(aPr, bPr) {
   }
 }
 const conversationPermissions = new Map();
+async function relevantPulls(repo) {
+  const values = new Map((await list(repo, '/pulls?state=open')).map(p => [p.number, p]));
+  // Bound fallback work; older pairs remain reachable via explicit PR events.
+  const cutoff = now - 7 * 24 * 60 * 60 * 1000;
+  for (let page = 1; ; page++) {
+    const batch = await api(repo, `/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=${page}`);
+    for (const p of batch) if (Date.parse(p.updated_at) >= cutoff) values.set(p.number, p);
+    if (batch.length < 100 || batch.some(p => Date.parse(p.updated_at) < cutoff)) break;
+  }
+  return values;
+}
+const pairedNumber = p => p.user?.login === bot && p.head.repo?.full_name === target
+  ? Number(/^incoming\/a-pr-([1-9][0-9]*)$/.exec(p.head.ref)?.[1]) : null;
 async function run() {
-  if (process.env.GITHUB_REPOSITORY !== controllerRepo || process.env.GITHUB_REF !== 'refs/heads/main') throw new Error('Controller must run from isolated controller main');
+  if (env.GITHUB_REPOSITORY !== controllerRepo || env.GITHUB_REF !== 'refs/heads/main') throw new Error('Controller must run from isolated controller main');
   report.trigger = notificationMetadata({
-    source, target, repo: process.env.TRIGGER_SOURCE_REPO, sha: process.env.TRIGGER_SOURCE_SHA,
-    runId: process.env.TRIGGER_SOURCE_RUN_ID, event: process.env.TRIGGER_SOURCE_EVENT, pr: process.env.TRIGGER_SOURCE_PR,
+    source, target, repo: env.TRIGGER_SOURCE_REPO, sha: env.TRIGGER_SOURCE_SHA,
+    runId: env.TRIGGER_SOURCE_RUN_ID, event: env.TRIGGER_SOURCE_EVENT, pr: env.TRIGGER_SOURCE_PR,
   });
   if (!sourceToken || !targetToken) throw new Error('Missing scoped tokens');
   for (const [token, expected] of [[sourceToken, source], [targetToken, target]]) {
-    const response = await fetch('https://api.github.com/installation/repositories', {
+    const response = await fetchImpl('https://api.github.com/installation/repositories', {
       headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' }, signal: AbortSignal.timeout(30000),
     });
     if (!response.ok) throw new Error('Cannot verify installation token scope');
@@ -138,16 +158,31 @@ async function run() {
   report.sourceAfter = (await api(source, '/git/ref/heads/main')).object.sha;
   if (report.sourceAfter !== bSha) throw new Error('A main changed concurrently; retry after inspection');
 
-  const prs = await list(source, '/pulls?state=all&sort=created&direction=desc');
-  const targetPRs = await list(target, '/pulls?state=all&sort=created&direction=desc');
-  for (const initial of prs) {
+  const prs = await relevantPulls(source);
+  const targetPRs = await relevantPulls(target);
+  if (report.trigger?.pr) {
+    const p = await api(report.trigger.repository, `/pulls/${report.trigger.pr}`);
+    (report.trigger.repository === source ? prs : targetPRs).set(p.number, p);
+  }
+  for (const p of targetPRs.values()) {
+    const n = pairedNumber(p);
+    if (n && !prs.has(n)) prs.set(n, await api(source, `/pulls/${n}`));
+  }
+  for (const initial of prs.values()) {
     if (initial.base.ref !== 'main' || initial.head.repo?.full_name !== source) continue;
+    let a = initial, b;
+    try {
     const marker = `<!-- b-authoritative-bridge:${source}#${initial.number} -->`;
-    let matches = targetPRs.filter(p => p.body?.startsWith(marker) && p.user.login === bot);
+    let matches = [...targetPRs.values()].filter(p => pairedNumber(p) === initial.number);
+    if (!matches.length) {
+      // A may still be open even when its paired B PR was closed long ago.
+      matches = (await list(target, `/pulls?state=all&head=${encodeURIComponent(target.split('/')[0] + ':incoming/a-pr-' + initial.number)}`))
+        .filter(p => pairedNumber(p) === initial.number);
+    }
     if (matches.length > 1) throw new Error(`Multiple B PRs mapped to A#${initial.number}`);
-    let b = matches[0];
+    b = matches[0];
     if (!b && initial.state !== 'open') continue;
-    let a = await api(source, `/pulls/${initial.number}`);
+    a = await api(source, `/pulls/${initial.number}`);
     if (a.draft && !b) continue;
     if (b) b = await api(target, `/pulls/${b.number}`);
     if (b && (b.base.ref !== 'main' || b.head.ref !== `incoming/a-pr-${a.number}` || b.head.repo?.full_name !== target)) throw new Error('PR pair refs no longer match bridge policy');
@@ -159,30 +194,36 @@ async function run() {
     if (fetched !== aHead) { report.pairs.push({ a: a.number, state: 'source-changed-retry' }); continue; }
     const included = ancestor(aHead, bSha);
     if (b) {
+      git(['fetch', '--no-tags', bUrl, `refs/pull/${b.number}/head`], targetToken);
+      if (git(['rev-parse', 'FETCH_HEAD']).text !== b.head.sha) {
+        report.pairs.push({ a: a.number, b: b.number, state: 'target-changed-retry' }); continue;
+      }
+      const sourceIncludedInBHead = ancestor(aHead, b.head.sha);
       // If a merge happened after our B/main snapshot, defer closure until the next run.
       const mergeResultIncluded = Boolean(b.merged_at) && shaPattern.test(b.merge_commit_sha ?? '')
         && git(['cat-file', '-e', `${b.merge_commit_sha}^{commit}`], null, [0, 1, 128]).status === 0
         && ancestor(b.merge_commit_sha, bSha);
       const decision = pairDecision({
         merged: Boolean(b.merged_at), closed: b.state === 'closed', sourceClosed: a.state === 'closed',
-        headIncluded: included, mergeResultIncluded, sourceHead: aHead, mergedHead: b.head.sha,
+        headIncluded: included, mergeResultIncluded, sourceHead: aHead, mergedHead: b.head.sha, sourceIncludedInBHead,
       });
       if (decision !== 'pending') {
-        const acceptedVia = decision === 'accepted' ? 'source-ancestry' : null;
-        const row = { a: a.number, b: b.number, state: decision, sourceHead: aHead, mergedHead: b.head.sha, mergeCommit: b.merge_commit_sha, mergeResultIncluded, acceptedVia };
+        const row = { a: a.number, b: b.number, state: decision, sourceHead: aHead, mergedHead: b.head.sha, mergeCommit: b.merge_commit_sha, mergeResultIncluded };
         report.pairs.push(row);
-        if (decision === 'withdrawn') {
-          await api(target, `/pulls/${b.number}`, { method: 'PATCH', body: { state: 'closed' } });
+        if (decision === 'source-closed') {
+          await statusComment(b.number, `A PR #${a.number} is closed${a.merged_at ? ' (merged at A outside the contribution flow)' : ''}. B still decides whether this contribution is accepted or rejected. This bot will not close or reopen this B PR. Reopen A if further contribution is needed.`, target, a.number);
         }
         const message = decision === 'accepted'
-          ? `Accepted in [B PR #${b.number}](${b.html_url}).\n\nB merge result: \`${b.merge_commit_sha}\`, verified in B/main.\n\nA/main synchronized to B/main: \`${bSha}\`.\n\nOriginal source head \`${aHead}\` is included in accepted history; original commit identities are preserved.\n\nNo independent merge was performed at A.`
+          ? `Accepted in [B PR #${b.number}](${b.html_url}).\n\nB merge result: \`${b.merge_commit_sha}\`, verified in B/main and synchronized to A/main.\n\nOriginal source head \`${aHead}\` is included in accepted history; original commit identities are preserved.\n\nNo independent merge was performed at A.`
           : decision === 'identity-not-preserved'
             ? `Identity constraint not satisfied for [B PR #${b.number}](${b.html_url}): original source head \`${aHead}\` is missing from B/main. Use Create a merge commit; squash/rebase are unsupported. A/main still follows B/main, but this contribution is not marked accepted and no open A PR is closed by this decision. Maintainer must inspect the rewritten history.`
           : decision === 'new-commits-pending'
             ? `B merged [PR #${b.number}](${b.html_url}), but current A head \`${aHead}\` contains unaccepted commits. Main is synchronized only to accepted B history. Submit the remaining changes in a new PR from current main; this PR is not marked complete.`
             : decision === 'merge-result-not-in-main'
               ? `B merged [PR #${b.number}](${b.html_url}), but its merge result \`${b.merge_commit_sha}\` is not in the B/main snapshot \`${bSha}\` synchronized by this run. This PR is not marked complete; retry against current B/main or inspect a history rewrite.`
-            : `Bridge status: **${decision}**. [B PR #${b.number}](${b.html_url}). No unaccepted code is added to either main; this pair will not be recreated automatically.`;
+            : decision === 'source-closed'
+              ? `A PR is closed; [B PR #${b.number}](${b.html_url}) remains under B's control. No merge or closure is performed at B. Reopen A if further contribution is needed.`
+              : `Bridge status: **${decision}**. [B PR #${b.number}](${b.html_url}). No unaccepted code is added to either main; this pair will not be recreated automatically.`;
         await statusComment(a.number, message);
         // Refresh immediately before closing, so a newer source head is not silently discarded.
         a = await api(source, `/pulls/${a.number}`);
@@ -190,6 +231,10 @@ async function run() {
           await api(source, `/pulls/${a.number}`, { method: 'PATCH', body: { state: 'closed' } });
         }
         continue;
+      }
+      if (!sourceIncludedInBHead && !ancestor(b.head.sha, aHead)) {
+        await statusComment(a.number, `Blocked: incoming branch on [B PR #${b.number}](${b.html_url}) diverged from A head \`${aHead}\`. B changes are preserved; no force-push is performed. Coordinate with B or open a new A PR from current A/main. Other PRs continue processing.`);
+        report.pairs.push({ a: a.number, b: b.number, state: 'incoming-diverged', sourceHead: aHead }); continue;
       }
     }
     if (a.state !== 'open' || a.draft) continue;
@@ -201,23 +246,27 @@ async function run() {
       continue;
     }
     const branch = `incoming/a-pr-${a.number}`;
-    if (!b || b.head.sha !== aHead) {
+    if (!b || !ancestor(aHead, b.head.sha)) {
       assertPush({ repo: target, source, target, ref: `refs/heads/${branch}` });
       git(['push', bUrl, `${aHead}:refs/heads/${branch}`], targetToken);
     }
-    const body = `${marker}\nContribution from [A PR #${a.number}](${a.html_url}).\n\nSource head: \`${aHead}\`.\n\n### Merge instruction: preserve contributor identity\n\nPlease select **Create a merge commit** for this contribution. Do not squash or rebase this PR: original commit SHAs, authors and committers must be preserved. This is an instruction to the maintainer, not a restriction enforced by repository settings or branch protection.\n\nB is the source of truth. The controller synchronizes A/main to B/main and closes the accepted source PR only when its original head and B merge result are in main. If original commits are missing, the controller reports the identity issue; it cannot undo a merge or restore identity merely by synchronizing main.`;
+    const body = `${marker}\nContribution from [A PR #${a.number}](${a.html_url}).\n\nInitial source head: \`${aHead}\`. See the source PR status and current branch commits for subsequent updates.\n\n### Merge instruction: preserve contributor identity\n\nPlease select **Create a merge commit** for this contribution. Do not squash or rebase this PR: original commit SHAs, authors and committers must be preserved. This is an instruction to the maintainer, not a restriction enforced by repository settings or branch protection.\n\nB is the source of truth. The controller synchronizes A/main to B/main and closes the accepted source PR only when its original head and B merge result are in main. If original commits are missing, the controller reports the identity issue; it cannot undo a merge or restore identity merely by synchronizing main.`;
     if (!b) {
       b = await api(target, '/pulls', { method: 'POST', body: { title: `A PR #${a.number}: ${a.title}`, head: branch, base: 'main', body } });
       await syncConversation(a.number, b.number);
-    } else if (b.body !== body || b.title !== `A PR #${a.number}: ${a.title}`) {
-      b = await api(target, `/pulls/${b.number}`, { method: 'PATCH', body: { title: `A PR #${a.number}: ${a.title}`, body } });
     }
     await statusComment(a.number, `Waiting for B approval: [PR #${b.number}](${b.html_url}).\n\nTransferred source head: \`${aHead}\`.\n\nGit mergeability: \`${b.mergeable_state ?? 'pending'}\` (conflict status, not approval). Reviews: ${reviewSummary(reviews)}.\n\nRead the mirrored B review comments below for the requested corrections. Review decisions refer to their recorded commit; B must review newer revisions.\n\nA/main remains at accepted B history \`${bSha}\`. Continue changes on this feature branch; do not merge this PR at A.`);
     report.pairs.push({ a: a.number, b: b.number, state: 'pending', sourceHead: aHead, url: b.html_url });
+    } catch (error) {
+      report.pairs.push({ a: initial.number, b: b?.number, state: 'error', error: error.message });
+      try { await statusComment(initial.number, `Bridge could not process this pair: ${error.message}. Other pairs continue; inspect the controller run. Main synchronization is reported separately.`); }
+      catch { /* Preserve the original failure even when posting the diagnostic fails. */ }
+    }
   }
+  if (report.pairs.some(p => p.state === 'error')) throw new Error('Some PR pairs failed; remaining pairs were still processed');
 }
 try { await run(); report.passed = true; }
-catch (error) { report.passed = false; report.error = error.message; process.exitCode = 1; }
+catch (error) { report.passed = false; report.error = error.message; }
 finally {
   const summary = ['# B-authoritative PR bridge', '', `Result: **${report.passed ? 'PASS' : 'FAIL'}**`, '',
     report.trigger ? `Triggered by [${report.trigger.repository} / ${report.trigger.event}${report.trigger.pr ? ` / PR #${report.trigger.pr}` : ''}](${report.trigger.run}) at event SHA \`${report.trigger.sha}\`. Reconciliation reads current PRs and B/main; event metadata is not an instruction to merge or update a supplied ref.\n` : '',
@@ -227,6 +276,12 @@ finally {
     '| A PR | B PR | State | Source head |', '|---|---|---|---|',
     ...report.pairs.map(p => `| [#${p.a}](https://github.com/${source}/pull/${p.a}) | ${p.b ? `[#${p.b}](https://github.com/${target}/pull/${p.b})` : '—'} | ${p.state} | \`${p.sourceHead ?? ''}\` |`),
     report.error ? `\nStopped: ${report.error}` : '', ''].join('\n');
-  if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
+  if (env.GITHUB_STEP_SUMMARY) appendFileSync(env.GITHUB_STEP_SUMMARY, summary);
+}
+return report;
+}
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const report = await runBridge();
   console.log(JSON.stringify(report, null, 2));
+  process.exitCode = report.passed ? 0 : 1;
 }

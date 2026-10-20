@@ -22,8 +22,7 @@ export function notificationMetadata({ source, target, repo, sha, runId, event, 
   if (![source, target].includes(repo) || !/^[a-f0-9]{40}$/.test(sha ?? '') || !/^[1-9][0-9]*$/.test(runId ?? '')) {
     throw new Error('Invalid notification metadata');
   }
-  // Accept existing B/main notifications while the notifier is being upgraded.
-  const kind = event || (repo === target ? 'push' : '');
+  const kind = event;
   if (!['push', 'pull_request_target', 'issue_comment', 'pull_request_review', 'pull_request_review_comment'].includes(kind)) {
     throw new Error('Invalid notification event');
   }
@@ -33,16 +32,16 @@ export function notificationMetadata({ source, target, repo, sha, runId, event, 
   return { repository: repo, sha, event: kind, pr: pr || null, run: `https://github.com/${repo}/actions/runs/${runId}` };
 }
 
-export function pairDecision({ merged, closed, sourceClosed, headIncluded, mergeResultIncluded, sourceHead, mergedHead }) {
+export function pairDecision({ merged, closed, sourceClosed, headIncluded, mergeResultIncluded, sourceHead, mergedHead, sourceIncludedInBHead }) {
   if (merged) {
     if (!mergeResultIncluded) return 'merge-result-not-in-main';
     // Identity requires the original commits in main, not just equivalent changes.
     const exactRevision = /^[a-f0-9]{40}$/.test(sourceHead ?? '') && sourceHead === mergedHead;
     if (headIncluded) return 'accepted';
-    return exactRevision ? 'identity-not-preserved' : 'new-commits-pending';
+    return exactRevision || sourceIncludedInBHead ? 'identity-not-preserved' : 'new-commits-pending';
   }
   if (closed) return 'rejected';
-  if (sourceClosed) return 'withdrawn';
+  if (sourceClosed) return 'source-closed';
   return 'pending';
 }
 
@@ -51,13 +50,14 @@ export function assertMutation({ repo, source, target, path, method, body }) {
   if (method === 'GET') return;
   const createPR = repo === target && method === 'POST' && path === '/pulls'
     && body.base === 'main' && /^incoming\/a-pr-[1-9][0-9]*$/.test(body.head);
-  const editPR = method === 'PATCH' && /^\/pulls\/[1-9][0-9]*$/.test(path)
-    && Object.keys(body).every(key => ['title', 'body', 'state'].includes(key))
-    && (!body.state || body.state === 'closed');
+  const editPR = repo === source && method === 'PATCH' && /^\/pulls\/[1-9][0-9]*$/.test(path)
+    && Object.keys(body).length === 1 && body.state === 'closed';
   const comment = ((method === 'POST' && /^\/issues\/[1-9][0-9]*\/comments$/.test(path))
     || (method === 'PATCH' && /^\/issues\/comments\/[1-9][0-9]*$/.test(path)))
     && Object.keys(body).every(key => key === 'body')
-    && (repo === source || (typeof body.body === 'string' && body.body.startsWith(`<!-- bridge-conversation:${source}#`)));
+    && (repo === source || (typeof body.body === 'string' && (
+      body.body.startsWith(`<!-- bridge-conversation:${source}#`)
+      || body.body.startsWith(`<!-- bridge-source-status:${source}#`))));
   if (!createPR && !editPR && !comment) throw new Error('Mutation outside bridge policy');
 }
 

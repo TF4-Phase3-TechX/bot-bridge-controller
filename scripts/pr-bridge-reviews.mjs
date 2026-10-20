@@ -5,17 +5,6 @@ export function textBlock(value) {
   const fence = '`'.repeat(longest + 1);
   return `${fence}text\n${text}\n${fence}`;
 }
-export const wrapProse = value => String(value ?? '').split('\n').map(line => {
-  const lines = [];
-  while (line.length > 88) {
-    const split = line.lastIndexOf(' ', 88);
-    if (split <= 0) break;
-    lines.push(line.slice(0, split));
-    line = line.slice(split + 1);
-  }
-  return [...lines, line].join('\n');
-}).join('\n');
-
 export function reviewFeedback(review, comments, targetPr) {
   const rows = [
     `### B review #${review.id} — ${review.state}`,
@@ -23,13 +12,13 @@ export function reviewFeedback(review, comments, targetPr) {
     `Reviewed commit: \`${review.commit_id}\``,
     'This is review feedback copied from B. Make corrections on the A feature branch; B decides whether to accept them.',
     '**Review message**',
-    textBlock(wrapProse(review.body || '(No overall message; see line comments below.)')),
+    textBlock(review.body || '(No overall message; see line comments below.)'),
   ];
   for (const comment of comments.filter(c => c.pull_request_review_id === review.id)) {
     const outdated = comment.line == null && comment.original_line != null;
     rows.push(`**Line comment #${comment.id} by ${comment.user.login}**`,
       textBlock(`File: ${comment.path}\nLine: ${comment.line ?? comment.original_line ?? 'file-level'}${outdated ? ' (original location; outdated)' : ''}\nSide: ${comment.side ?? 'not specified'}\nComment commit: ${comment.commit_id ?? review.commit_id}`),
-      textBlock(wrapProse(comment.body)));
+      textBlock(comment.body));
     if (comment.diff_hunk) rows.push('Context at review time:', textBlock(comment.diff_hunk));
   }
   const body = rows.join('\n\n');

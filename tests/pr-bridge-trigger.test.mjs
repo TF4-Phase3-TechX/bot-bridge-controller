@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import { notificationMetadata } from '../scripts/pr-bridge-policy.mjs';
 
 const base = { source: 'A/repo', target: 'B/repo', repo: 'A/repo', sha: 'a'.repeat(40), runId: '123', event: 'pull_request_target', pr: '8' };
-test('manual invocation has no notification; existing B push input remains valid', () => {
+test('manual invocation has no notification; B push requires explicit event metadata', () => {
   assert.equal(notificationMetadata({ source: base.source, target: base.target }), null);
-  assert.equal(notificationMetadata({ ...base, repo: 'B/repo', event: '', pr: '' }).event, 'push');
+  assert.equal(notificationMetadata({ ...base, repo: 'B/repo', event: 'push', pr: '' }).event, 'push');
+  assert.throws(() => notificationMetadata({ ...base, repo: 'B/repo', event: '', pr: '' }), /Invalid notification event/);
 });
 test('A and B PR, review and conversation notifications retain provenance', () => {
   for (const repo of ['A/repo', 'B/repo']) for (const event of ['pull_request_target', 'issue_comment', 'pull_request_review', 'pull_request_review_comment']) {

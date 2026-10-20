@@ -25,3 +25,7 @@ test('comment-only review does not erase a prior changes-requested decision', ()
 test('oversized review fails explicitly instead of hiding missing feedback', () => {
   assert.throws(() => reviewFeedback({ ...review, body: 'x'.repeat(60000) }, [], 14), /too large/);
 });
+test('long code and suggestion lines remain byte-for-byte inside the literal block', () => {
+  const body = '```suggestion\nconst message = "' + 'alpha beta gamma '.repeat(10) + '";\n```';
+  assert.ok(reviewFeedback({ ...review, body }, [], 14).includes(body));
+});

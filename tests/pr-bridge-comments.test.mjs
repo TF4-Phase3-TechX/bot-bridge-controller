@@ -29,3 +29,7 @@ test('does not activate markdown commands and fails explicitly on oversized comm
   assert.match(copy.body, /````text\n```/);
   assert.throws(() => conversationCopies({ ...args, comments: [{ ...comment, body: 'x'.repeat(60000) }] }), /too large/);
 });
+test('long comment lines are not reflowed', () => {
+  const body = 'Run: ' + 'argument=value '.repeat(20);
+  assert.ok(conversationCopies({ ...args, comments: [{ ...comment, body }] })[0].body.includes(body));
+});

@@ -155,7 +155,6 @@ async function run() {
   report.sourceAfter = (await api(source, '/git/ref/heads/main')).object.sha;
   if (report.sourceAfter !== bSha) throw new Error('A main changed concurrently; retry after inspection');
 
-  report.branches = await syncBranches({ source, target, sourceToken, targetToken, git, api, list, ancestor });
   const prs = await relevantPulls(source);
   const targetPRs = await relevantPulls(target);
   if (report.trigger?.pr) {
@@ -261,6 +260,9 @@ async function run() {
       catch { /* Preserve the original failure even when posting the diagnostic fails. */ }
     }
   }
+  // Read B heads after PR transport so newly created/advanced incoming branches
+  // are mirrored in this same run. Branch failures never starve contribution.
+  report.branches = await syncBranches({ source, target, sourceToken, targetToken, git, api, list, ancestor });
   if (report.pairs.some(p => p.state === 'error')) throw new Error('Some PR pairs failed; remaining pairs were still processed');
   if (report.branches.some(b => b.state === 'error')) throw new Error('Some B-to-A branches failed; other branches and PR pairs were still processed');
 }

@@ -19,7 +19,7 @@ function fixture(options = {}) {
   const a = n => ({
     number: n, state: 'open', draft: false, title: 'Contribution ' + n,
     updated_at: recent, base: { ref: 'main' },
-    head: { sha: n === 2 ? head : second, repo: { full_name: config.source } },
+    head: { sha: n === 2 ? head : second, ref: 'feature-' + n, repo: { full_name: config.source } },
     html_url: `https://github.com/${config.source}/pull/${n}`,
   });
   const sources = [a(2), a(1)];
@@ -57,6 +57,7 @@ function fixture(options = {}) {
     TRIGGER_SOURCE_RUN_ID: '11', TRIGGER_SOURCE_EVENT: 'issue_comment', TRIGGER_SOURCE_PR: '2',
   });
   let fetched, mainSha = main, sourceReads = 0;
+  const mirrored = new Map();
   const spawnImpl = (_command, raw) => {
     const args = raw.slice(4);
     if (options.branchFetchFailure && args[0] === 'fetch' && args.includes('--prune')) throw new Error('Branch snapshot unavailable');
@@ -66,7 +67,13 @@ function fixture(options = {}) {
       fetched = (args[2].includes('/A/') ? sources : targets).find(p => p.number === n).head.sha;
     }
     if (args[0] === 'rev-parse') stdout = args[1] === 'FETCH_HEAD' ? fetched : mainSha;
-    if (args[0] === 'for-each-ref') stdout = mainSha + ' ' + args[2] + 'main';
+    if (args[0] === 'for-each-ref') {
+      stdout = mainSha + ' ' + args[2] + 'main';
+      if (options.reflectIncoming) {
+        const refs = args[2].includes('all-b') ? targets.map(p => [p.head.ref, p.head.sha]) : [...mirrored];
+        stdout += refs.map(([ref, sha]) => '\n' + sha + ' ' + args[2] + ref).join('');
+      }
+    }
     if (args[0] === 'merge-base') {
       if (args[1] === '--is-ancestor') status = isAncestor(args[2], args[3]) ? 0 : 1;
       else stdout = base;
@@ -74,6 +81,11 @@ function fixture(options = {}) {
     if (args[0] === 'push') {
       pushes.push(args);
       if (options.pushFailure && args.at(-1).endsWith('a-pr-2')) status = 1;
+      if (options.reflectIncoming && status === 0) {
+        const [sha, ref] = args.at(-1).split(':refs/heads/');
+        if (args.includes('https://github.com/A/repo.git')) mirrored.set(ref, sha);
+        else for (const p of targets) if (p.head.ref === ref) p.head.sha = sha;
+      }
     }
     if (args[0] === 'diff' && options.workflowChange) stdout = '.github/workflows/unsafe.yml';
     return { stdout, stderr: '', status };
@@ -88,6 +100,10 @@ function fixture(options = {}) {
     const repo = u.pathname.startsWith('/repos/A/') ? config.source : config.target;
     const path = u.pathname.slice(('/repos/' + repo).length), prs = repo === config.source ? sources : targets;
     if (path === '/git/ref/heads/main') return reply({ object: { sha: mainSha } });
+    if (options.reflectIncoming && path.startsWith('/git/ref/heads/')) {
+      const ref = decodeURIComponent(path.slice('/git/ref/heads/'.length));
+      return reply({ object: { sha: repo === config.source ? mirrored.get(ref) : targets.find(p => p.head.ref === ref)?.head.sha } });
+    }
     if (path === '/pulls' && method === 'GET') {
       let items = prs.filter(p => u.searchParams.get('state') === 'all' || p.state === u.searchParams.get('state'));
       if (u.searchParams.has('head')) items = items.filter(p => u.searchParams.get('head').endsWith(':' + p.head.ref));
@@ -167,6 +183,15 @@ test('branch reconciliation errors remain visible without starving PR contributi
   assert.match(r.error, /B-to-A branches failed/);
   assert.equal(r.branches[0].state, 'error');
   assert.deepEqual(r.pairs.map(p => p.state), ['pending', 'pending']);
+});
+test('one run mirrors both newly created and advanced B incoming branches after PR transport', async () => {
+  const f = fixture({ reflectIncoming: true, sourceAhead: true }), r = await f.run();
+  assert.equal(r.passed, true);
+  for (const [branch, sha] of [['incoming/a-pr-1', second], ['incoming/a-pr-2', rewritten]]) {
+    const mirrored = r.branches.find(b => b.branch === branch);
+    assert.equal(mirrored.state, 'created');
+    assert.equal(mirrored.target, sha);
+  }
 });
 test('rewritten A feature branch is blocked per pair without force-push or starving another PR', async () => {
   const f = fixture({ diverged: true }), r = await f.run();

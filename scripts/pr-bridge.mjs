@@ -205,7 +205,7 @@ async function run() {
       assertPush({ repo: target, source, target, ref: `refs/heads/${branch}` });
       git(['push', bUrl, `${aHead}:refs/heads/${branch}`], targetToken);
     }
-    const body = `${marker}\nContribution from [A PR #${a.number}](${a.html_url}).\n\nSource head: \`${aHead}\`.\n\nB is the source of truth. Use Create a merge commit only, preserving original commit SHAs, authors and committers. Squash/rebase are unsupported. The controller synchronizes A/main to B/main and closes the accepted source PR only when its original head and B merge result are in main.`;
+    const body = `${marker}\nContribution from [A PR #${a.number}](${a.html_url}).\n\nSource head: \`${aHead}\`.\n\n### Merge instruction: preserve contributor identity\n\nPlease select **Create a merge commit** for this contribution. Do not squash or rebase this PR: original commit SHAs, authors and committers must be preserved. This is an instruction to the maintainer, not a restriction enforced by repository settings or branch protection.\n\nB is the source of truth. The controller synchronizes A/main to B/main and closes the accepted source PR only when its original head and B merge result are in main. If original commits are missing, the controller reports the identity issue; it cannot undo a merge or restore identity merely by synchronizing main.`;
     if (!b) {
       b = await api(target, '/pulls', { method: 'POST', body: { title: `A PR #${a.number}: ${a.title}`, head: branch, base: 'main', body } });
       await syncConversation(a.number, b.number);

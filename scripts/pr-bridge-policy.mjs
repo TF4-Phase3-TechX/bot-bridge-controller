@@ -18,9 +18,10 @@ export function assertMutation({ repo, source, target, path, method, body }) {
   const editPR = method === 'PATCH' && /^\/pulls\/[1-9][0-9]*$/.test(path)
     && Object.keys(body).every(key => ['title', 'body', 'state'].includes(key))
     && (!body.state || body.state === 'closed');
-  const comment = repo === source && ((method === 'POST' && /^\/issues\/[1-9][0-9]*\/comments$/.test(path))
+  const comment = ((method === 'POST' && /^\/issues\/[1-9][0-9]*\/comments$/.test(path))
     || (method === 'PATCH' && /^\/issues\/comments\/[1-9][0-9]*$/.test(path)))
-    && Object.keys(body).every(key => key === 'body');
+    && Object.keys(body).every(key => key === 'body')
+    && (repo === source || (typeof body.body === 'string' && body.body.startsWith(`<!-- bridge-conversation:${source}#`)));
   if (!createPR && !editPR && !comment) throw new Error('Mutation outside bridge policy');
 }
 

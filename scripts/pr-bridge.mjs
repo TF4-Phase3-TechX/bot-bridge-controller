@@ -2,6 +2,7 @@ import { spawnSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 import { mainSyncDecision, pairDecision, assertMutation, assertPush } from './pr-bridge-policy.mjs';
 import { reviewFeedback, reviewSummary } from './pr-bridge-reviews.mjs';
+import { conversationCopies } from './pr-bridge-comments.mjs';
 
 const source = 'Vihnnnn/bot-bridge-lab';
 const target = 'TF4-Phase3-TechX/bot-bridge-lab';
@@ -74,6 +75,21 @@ async function syncReviewFeedback(aPr, bPr) {
   }
   return reviews;
 }
+async function syncConversation(aPr, bPr) {
+  // Read both snapshots before writing; only human comments are copied, never bot echoes.
+  const aComments = await list(source, `/issues/${aPr}/comments`);
+  const bComments = await list(target, `/issues/${bPr}/comments`);
+  for (const side of [
+    { originRepo: source, originPr: aPr, originSide: 'A', comments: aComments, existing: bComments, destinationBot: bot, repo: target, pr: bPr },
+    { originRepo: target, originPr: bPr, originSide: 'B', comments: bComments, existing: aComments, destinationBot: sourceBot, repo: source, pr: aPr },
+  ]) {
+    for (const copy of conversationCopies(side)) {
+      await api(side.repo, copy.id ? `/issues/comments/${copy.id}` : `/issues/${side.pr}/comments`, {
+        method: copy.id ? 'PATCH' : 'POST', body: { body: copy.body },
+      });
+    }
+  }
+}
 async function run() {
   if (process.env.GITHUB_REPOSITORY !== controllerRepo || process.env.GITHUB_REF !== 'refs/heads/main') throw new Error('Controller must run from isolated controller main');
   if (!sourceToken || !targetToken) throw new Error('Missing scoped tokens');
@@ -115,6 +131,7 @@ async function run() {
     if (b) b = await api(target, `/pulls/${b.number}`);
     if (b && (b.base.ref !== 'main' || b.head.ref !== `incoming/a-pr-${a.number}` || b.head.repo?.full_name !== target)) throw new Error('PR pair refs no longer match bridge policy');
     let reviews = b ? await syncReviewFeedback(a.number, b.number) : [];
+    if (b) await syncConversation(a.number, b.number);
     const aHead = requireSha(a.head.sha);
     git(['fetch', '--no-tags', aUrl, `refs/pull/${a.number}/head`], sourceToken);
     const fetched = git(['rev-parse', 'FETCH_HEAD']).text;
@@ -158,6 +175,7 @@ async function run() {
     const body = `${marker}\nContribution from [A PR #${a.number}](${a.html_url}).\n\nSource head: \`${aHead}\`.\n\nB is the source of truth. Review and merge here with a merge commit. The controller will fast-forward A/main to the accepted B history and complete the source PR. Original Git commits are transported unchanged.`;
     if (!b) {
       b = await api(target, '/pulls', { method: 'POST', body: { title: `A PR #${a.number}: ${a.title}`, head: branch, base: 'main', body } });
+      await syncConversation(a.number, b.number);
     } else if (b.body !== body || b.title !== `A PR #${a.number}: ${a.title}`) {
       b = await api(target, `/pulls/${b.number}`, { method: 'PATCH', body: { title: `A PR #${a.number}: ${a.title}`, body } });
     }

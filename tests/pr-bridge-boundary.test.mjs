@@ -22,10 +22,11 @@ test('Git push may update A main or paired B feature branch only', () => {
   }
   assert.throws(() => assertPush({ source, target, repo: 'other/repo', ref: 'refs/heads/main' }));
 });
-test('Only source PR status comments and limited PR edits are allowed', () => {
+test('Source comments, marked B conversation copies and limited PR edits are allowed', () => {
   assert.doesNotThrow(() => mutation({ repo: source, method: 'POST', path: '/issues/2/comments', body: { body: 'accepted' } }));
   assert.doesNotThrow(() => mutation({ method: 'PATCH', path: '/pulls/2', body: { state: 'closed' } }));
   assert.throws(() => mutation({ repo: 'other/repo', method: 'GET', path: '/pulls' }));
   assert.throws(() => mutation({ method: 'POST', path: '/issues/2/comments', body: { body: 'unscoped comment' } }));
+  assert.doesNotThrow(() => mutation({ method: 'POST', path: '/issues/2/comments', body: { body: '<!-- bridge-conversation:A/repo#2:123 -->\nAddressed finding.' } }));
   assert.throws(() => mutation({ method: 'PATCH', path: '/pulls/2', body: { state: 'open' } }));
 });

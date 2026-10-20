@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { appendFileSync } from 'node:fs';
 import { mainSyncDecision, pairDecision, assertMutation, assertPush } from './pr-bridge-policy.mjs';
+import { reviewFeedback, reviewSummary } from './pr-bridge-reviews.mjs';
 
 const source = 'Vihnnnn/bot-bridge-lab';
 const target = 'TF4-Phase3-TechX/bot-bridge-lab';
@@ -57,6 +58,22 @@ async function statusComment(pr, content) {
   if (old?.body === body) return;
   await api(source, old ? `/issues/comments/${old.id}` : `/issues/${pr}/comments`, { method: old ? 'PATCH' : 'POST', body: { body } });
 }
+async function syncReviewFeedback(aPr, bPr) {
+  const reviews = await list(target, `/pulls/${bPr}/reviews`);
+  const inline = await list(target, `/pulls/${bPr}/comments`);
+  const existing = await list(source, `/issues/${aPr}/comments`);
+  for (const review of reviews) {
+    if (!review.submitted_at || review.state === 'PENDING') continue;
+    const marker = `<!-- bridge-review:${target}#${bPr}:${review.id} -->`;
+    const body = `${marker}\n${reviewFeedback(review, inline, bPr)}`;
+    const old = existing.find(c => c.user.login === sourceBot && c.body.startsWith(marker));
+    if (old?.body === body) continue;
+    await api(source, old ? `/issues/comments/${old.id}` : `/issues/${aPr}/comments`, {
+      method: old ? 'PATCH' : 'POST', body: { body },
+    });
+  }
+  return reviews;
+}
 async function run() {
   if (process.env.GITHUB_REPOSITORY !== controllerRepo || process.env.GITHUB_REF !== 'refs/heads/main') throw new Error('Controller must run from isolated controller main');
   if (!sourceToken || !targetToken) throw new Error('Missing scoped tokens');
@@ -97,6 +114,7 @@ async function run() {
     if (a.draft && !b) continue;
     if (b) b = await api(target, `/pulls/${b.number}`);
     if (b && (b.base.ref !== 'main' || b.head.ref !== `incoming/a-pr-${a.number}` || b.head.repo?.full_name !== target)) throw new Error('PR pair refs no longer match bridge policy');
+    let reviews = b ? await syncReviewFeedback(a.number, b.number) : [];
     const aHead = requireSha(a.head.sha);
     git(['fetch', '--no-tags', aUrl, `refs/pull/${a.number}/head`], sourceToken);
     const fetched = git(['rev-parse', 'FETCH_HEAD']).text;
@@ -143,10 +161,7 @@ async function run() {
     } else if (b.body !== body || b.title !== `A PR #${a.number}: ${a.title}`) {
       b = await api(target, `/pulls/${b.number}`, { method: 'PATCH', body: { title: `A PR #${a.number}: ${a.title}`, body } });
     }
-    const reviews = await list(target, `/pulls/${b.number}/reviews`);
-    const latestReviews = new Map();
-    for (const review of reviews) latestReviews.set(review.user.login, `${review.user.login}: ${review.state}`);
-    await statusComment(a.number, `Waiting for B approval: [PR #${b.number}](${b.html_url}).\n\nTransferred source head: \`${aHead}\`.\n\nB mergeability: \`${b.mergeable_state ?? 'pending'}\`. Reviews: ${[...latestReviews.values()].join('; ') || 'none yet'}.\n\nA/main remains at accepted B history \`${bSha}\`. Continue changes on this feature branch; do not merge this PR at A.`);
+    await statusComment(a.number, `Waiting for B approval: [PR #${b.number}](${b.html_url}).\n\nTransferred source head: \`${aHead}\`.\n\nGit mergeability: \`${b.mergeable_state ?? 'pending'}\` (conflict status, not approval). Reviews: ${reviewSummary(reviews)}.\n\nRead the mirrored B review comments below for the requested corrections. Review decisions refer to their recorded commit; B must review newer revisions.\n\nA/main remains at accepted B history \`${bSha}\`. Continue changes on this feature branch; do not merge this PR at A.`);
     report.pairs.push({ a: a.number, b: b.number, state: 'pending', sourceHead: aHead, url: b.html_url });
   }
 }

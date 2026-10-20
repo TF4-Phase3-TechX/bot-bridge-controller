@@ -11,9 +11,9 @@ test('a B merge does not accept newer unmerged A commits', () => {
   assert.equal(pairDecision({ merged: true, headIncluded: true, mergeResultIncluded: true }), 'accepted');
   assert.equal(pairDecision({ merged: true, headIncluded: false, mergeResultIncluded: true }), 'new-commits-pending');
 });
-test('squash and rebase accept the exact merged PR revision despite rewritten SHAs', () => {
+test('rewritten source commits cannot satisfy identity even with exact merged PR head', () => {
   const sourceHead = 'a'.repeat(40);
-  assert.equal(pairDecision({ merged: true, mergeResultIncluded: true, sourceHead, mergedHead: sourceHead, headIncluded: false }), 'accepted');
+  assert.equal(pairDecision({ merged: true, mergeResultIncluded: true, sourceHead, mergedHead: sourceHead, headIncluded: false }), 'identity-not-preserved');
 });
 test('newer or force-rewritten A revision is not silently closed after B squash or rebase', () => {
   assert.equal(pairDecision({ merged: true, mergeResultIncluded: true, sourceHead: 'b'.repeat(40), mergedHead: 'a'.repeat(40) }), 'new-commits-pending');

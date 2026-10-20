@@ -36,10 +36,10 @@ export function notificationMetadata({ source, target, repo, sha, runId, event, 
 export function pairDecision({ merged, closed, sourceClosed, headIncluded, mergeResultIncluded, sourceHead, mergedHead }) {
   if (merged) {
     if (!mergeResultIncluded) return 'merge-result-not-in-main';
-    // GitHub retains the source revision on the merged PR even when squash/rebase
-    // rewrites commits. Never infer acceptance from a matching tree or PR title.
+    // Identity requires the original commits in main, not just equivalent changes.
     const exactRevision = /^[a-f0-9]{40}$/.test(sourceHead ?? '') && sourceHead === mergedHead;
-    return headIncluded || exactRevision ? 'accepted' : 'new-commits-pending';
+    if (headIncluded) return 'accepted';
+    return exactRevision ? 'identity-not-preserved' : 'new-commits-pending';
   }
   if (closed) return 'rejected';
   if (sourceClosed) return 'withdrawn';

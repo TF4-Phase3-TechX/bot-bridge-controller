@@ -34,8 +34,8 @@ export function notificationMetadata({ source, target, repo, sha, runId, event, 
 
 export function pairDecision({ merged, closed, sourceClosed, headIncluded, mergeResultIncluded, sourceHead, mergedHead, sourceIncludedInBHead }) {
   if (merged) {
-    if (!mergeResultIncluded) return 'merge-result-not-in-main';
-    // Identity requires the original commits in main, not just equivalent changes.
+    if (!mergeResultIncluded) return 'merge-result-not-in-dev';
+    // Identity requires the original commits in dev, not just equivalent changes.
     const exactRevision = /^[a-f0-9]{40}$/.test(sourceHead ?? '') && sourceHead === mergedHead;
     if (headIncluded) return 'accepted';
     return exactRevision || sourceIncludedInBHead ? 'identity-not-preserved' : 'new-commits-pending';
@@ -49,7 +49,7 @@ export function assertMutation({ repo, source, target, path, method, body }) {
   if (![source, target].includes(repo)) throw new Error('Repository outside bridge scope');
   if (method === 'GET') return;
   const createPR = repo === target && method === 'POST' && path === '/pulls'
-    && body.base === 'main' && /^incoming\/a-pr-[1-9][0-9]*$/.test(body.head);
+    && body.base === 'dev' && /^incoming\/a-pr-[1-9][0-9]*$/.test(body.head);
   const editPR = repo === source && method === 'PATCH' && /^\/pulls\/[1-9][0-9]*$/.test(path)
     && Object.keys(body).length === 1 && body.state === 'closed';
   const comment = ((method === 'POST' && /^\/issues\/[1-9][0-9]*\/comments$/.test(path))

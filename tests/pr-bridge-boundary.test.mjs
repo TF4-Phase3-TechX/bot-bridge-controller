@@ -5,7 +5,7 @@ import { assertMutation, assertPush } from '../scripts/pr-bridge-policy.mjs';
 const source = 'A/repo', target = 'B/repo';
 const mutation = input => assertMutation({ source, target, repo: target, ...input });
 test('B may receive a paired PR but never a merge or reference API mutation', () => {
-  assert.doesNotThrow(() => mutation({ method: 'POST', path: '/pulls', body: { head: 'incoming/a-pr-2', base: 'main' } }));
+  assert.doesNotThrow(() => mutation({ method: 'POST', path: '/pulls', body: { head: 'incoming/a-pr-2', base: 'dev' } }));
   for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
     for (const path of ['/pulls/2/merge', '/git/refs/heads/main', '/branches/main/protection']) {
       assert.throws(() => mutation({ method, path, body: {} }), /outside bridge policy/);
@@ -32,4 +32,11 @@ test('Source comments, marked B conversation copies and limited PR edits are all
   assert.throws(() => mutation({ method: 'POST', path: '/issues/2/comments', body: { body: 'unscoped comment' } }));
   assert.doesNotThrow(() => mutation({ method: 'POST', path: '/issues/2/comments', body: { body: '<!-- bridge-conversation:A/repo#2:123 -->\nAddressed finding.' } }));
   assert.throws(() => mutation({ method: 'PATCH', path: '/pulls/2', body: { state: 'open' } }));
+});
+
+
+test('PR creation policy rejects every destination base except dev', () => {
+  for (const base of ['main', 'release', 'feature/test']) {
+    assert.throws(() => mutation({method:'POST',path:'/pulls',body:{head:'incoming/a-pr-2',base}}));
+  }
 });

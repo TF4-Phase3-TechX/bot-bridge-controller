@@ -18,9 +18,9 @@ test('rewritten source commits cannot satisfy identity even with exact merged PR
 test('newer or force-rewritten A revision is not silently closed after B squash or rebase', () => {
   assert.equal(pairDecision({ merged: true, mergeResultIncluded: true, sourceHead: 'b'.repeat(40), mergedHead: 'a'.repeat(40) }), 'new-commits-pending');
 });
-test('missing merge result in main defers acceptance even if source revision matches', () => {
+test('missing merge result in dev defers acceptance even if source revision matches', () => {
   for (const headIncluded of [true, false]) {
-    assert.equal(pairDecision({ merged: true, headIncluded, sourceHead: 'a'.repeat(40), mergedHead: 'a'.repeat(40), mergeResultIncluded: false }), 'merge-result-not-in-main');
+    assert.equal(pairDecision({ merged: true, headIncluded, sourceHead: 'a'.repeat(40), mergedHead: 'a'.repeat(40), mergeResultIncluded: false }), 'merge-result-not-in-dev');
   }
 });
 test('missing or malformed revision is never accepted merely by equality', () => {

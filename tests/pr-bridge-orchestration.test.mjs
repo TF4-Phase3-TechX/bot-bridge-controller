@@ -18,14 +18,14 @@ function fixture(options = {}) {
   };
   const a = n => ({
     number: n, state: 'open', draft: false, title: 'Contribution ' + n,
-    updated_at: recent, base: { ref: 'main' },
+    updated_at: recent, base: { ref: 'dev' },
     head: { sha: n === 2 ? head : second, ref: 'feature-' + n, repo: { full_name: config.source } },
     html_url: `https://github.com/${config.source}/pull/${n}`,
   });
   const sources = [a(2), a(1)];
   const target = {
     number: 20, state: 'open', merged_at: null, merge_commit_sha: null, updated_at: recent,
-    user: { login: config.bot, type: 'Bot' }, base: { ref: 'main' },
+    user: { login: config.bot, type: 'Bot' }, base: { ref: 'dev' },
     head: { sha: head, ref: 'incoming/a-pr-2', repo: { full_name: config.target } },
     body: 'Maintainer notes, no bridge marker.', title: 'Maintainer custom title',
     html_url: `https://github.com/${config.target}/pull/20`,
@@ -48,6 +48,8 @@ function fixture(options = {}) {
     if (options.accepted) parents.set(main, [head]);
   }
   if (options.bAhead && options.rewrittenMerge) target.head.sha = bExtra;
+  const devHead = options.distinctDev ? sha('9') : main;
+  if (options.distinctDev) { parents.set(devHead, [head]); parents.set(main, [base]); target.merge_commit_sha = devHead; }
   const env = {
     GITHUB_REPOSITORY: config.controllerRepo, GITHUB_REF: 'refs/heads/main',
     SOURCE_TOKEN: 'fake-A', BRIDGE_APP_TOKEN: 'fake-B', GITHUB_RUN_ID: '10',
@@ -66,7 +68,7 @@ function fixture(options = {}) {
       const n = Number(args[3].split('/')[2]);
       fetched = (args[2].includes('/A/') ? sources : targets).find(p => p.number === n).head.sha;
     }
-    if (args[0] === 'rev-parse') stdout = args[1] === 'FETCH_HEAD' ? fetched : mainSha;
+    if (args[0] === 'rev-parse') stdout = args[1] === 'FETCH_HEAD' ? fetched : args[1] === 'refs/remotes/bridge/b-dev' ? devHead : mainSha;
     if (args[0] === 'ls-remote') {
       const ref = args.at(-1);
       stdout = `${mirrored.get(ref.slice('refs/heads/'.length))}\t${ref}`;
@@ -105,6 +107,7 @@ function fixture(options = {}) {
     const repo = u.pathname.startsWith('/repos/A/') ? config.source : config.target;
     const path = u.pathname.slice(('/repos/' + repo).length), prs = repo === config.source ? sources : targets;
     if (path === '/git/ref/heads/main') return reply({ object: { sha: mainSha } });
+    if (path === '/git/ref/heads/dev') return options.missingDev ? reply({},404) : reply({object:{sha: options.unsyncedDev && repo === config.source ? base : devHead}});
     if (options.reflectIncoming && path.startsWith('/git/ref/heads/')) {
       const ref = decodeURIComponent(path.slice('/git/ref/heads/'.length));
       return reply({ object: { sha: repo === config.source ? mirrored.get(ref) : targets.find(p => p.head.ref === ref)?.head.sha } });
@@ -124,6 +127,7 @@ function fixture(options = {}) {
     if (pr) {
       const p = prs.find(p => p.number === Number(pr[1]));
       if (repo === config.source && p.number === 2 && method === 'GET' && ++sourceReads === 2 && options.newerBeforeClose) p.head.sha = rewritten;
+      if (options.retargetBeforeRead && repo === config.source && method === 'GET') p.base.ref = 'main';
       if (method === 'PATCH') Object.assign(p, body);
       return reply(p);
     }
@@ -269,4 +273,56 @@ test('workflow-changing contribution stays blocked', async () => {
   const f = fixture({ workflowChange: true }), r = await f.run();
   assert.ok(r.pairs.every(p => p.state === 'blocked-workflow-change'));
   assert.equal(f.pushes.length, 0);
+});
+
+
+test('non-dev PRs are ignored even on explicit comment dispatch or scheduled scans', async () => {
+  for (const base of ['main', 'release/test']) {
+    for (const event of [true, false]) {
+      const f = fixture({event});
+      for (const pr of f.sources) pr.base.ref = base;
+      const r = await f.run();
+      assert.equal(r.passed, true);
+      assert.equal(r.pairs.length, 0);
+      assert.equal(f.calls.filter(c => c.method !== 'GET' && c.path !== '/graphql').length, 0);
+      assert.ok(!f.pushes.some(p => p.includes('https://github.com/B/repo.git')));
+    }
+  }
+});
+
+test('new destination PRs target dev and a preexisting main pair cannot be updated', async () => {
+  const f = fixture();
+  f.targets[0].base.ref = 'main';
+  const r = await f.run();
+  assert.equal(r.pairs.find(p => p.a === 2).state, 'error');
+  assert.ok(!f.pushes.some(p => p.at(-1).endsWith('a-pr-2')));
+  const created = f.calls.find(c => c.method === 'POST' && c.path.endsWith('/pulls'));
+  assert.equal(created.body.base, 'dev');
+});
+
+
+test('acceptance uses dev even when main does not contain the source or merge commit', async () => {
+  const f = fixture({accepted:true, distinctDev:true});
+  const r = await f.run();
+  assert.equal(r.passed,true);
+  assert.equal(r.pairs[0].state,'accepted');
+  assert.equal(f.sources[0].state,'closed');
+});
+
+test('missing or unsynchronized dev never falls back to main or closes the accepted source PR', async () => {
+  for (const extra of [{missingDev:true},{unsyncedDev:true}]) {
+    const f = fixture({accepted:true, ...extra});
+    const r = await f.run();
+    assert.equal(r.passed,false);
+    assert.equal(f.sources[0].state,'open');
+  }
+});
+
+test('a PR retargeted to main after listing is skipped before content or branch writes', async () => {
+  const f=fixture({retargetBeforeRead:true});
+  const r=await f.run();
+  assert.equal(r.passed,true);
+  assert.ok(r.pairs.every(p=>p.state==='skipped-non-dev'));
+  assert.equal(f.calls.filter(c=>c.method!=='GET' && c.path!=='/graphql').length,0);
+  assert.equal(f.pushes.length,0);
 });

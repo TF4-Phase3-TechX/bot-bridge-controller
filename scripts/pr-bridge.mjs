@@ -3,8 +3,8 @@ import { appendFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mainSyncDecision, mainSyncPush, pairDecision, assertMutation, assertPush, notificationMetadata } from './pr-bridge-policy.mjs';
-import { reviewFeedback, reviewSummary } from './pr-bridge-reviews.mjs';
-import { conversationCopies } from './pr-bridge-comments.mjs';
+import { textBlock, reviewSummary } from './pr-bridge-reviews.mjs';
+import { syncContent } from './pr-content.mjs';
 import { loadConfig, pairConfig } from './bridge-config.mjs';
 import { syncBranches } from './branch-sync.mjs';
 
@@ -63,49 +63,20 @@ async function statusComment(pr, content, repo = source, aPr = pr) {
   if (old?.body === body) return;
   await api(repo, old ? `/issues/comments/${old.id}` : `/issues/${pr}/comments`, { method: old ? 'PATCH' : 'POST', body: { body } });
 }
-async function syncReviewFeedback(aPr, bPr) {
-  const reviews = await list(target, `/pulls/${bPr}/reviews`);
-  const inline = await list(target, `/pulls/${bPr}/comments`);
-  const existing = await list(source, `/issues/${aPr}/comments`);
-  for (const review of reviews) {
-    if (!review.submitted_at || review.state === 'PENDING') continue;
-    const marker = `<!-- bridge-review:${target}#${bPr}:${review.id} -->`;
-    const body = `${marker}\n${reviewFeedback(review, inline, bPr)}`;
-    const old = existing.find(c => c.user.login === sourceBot && c.body.startsWith(marker));
-    if (old?.body === body) continue;
-    await api(source, old ? `/issues/comments/${old.id}` : `/issues/${aPr}/comments`, {
-      method: old ? 'PATCH' : 'POST', body: { body },
-    });
-  }
-  return reviews;
+async function graphql(repo, query, variables) {
+  if (![source, target].includes(repo) || !query.trimStart().startsWith('query')) throw new Error('Invalid read scope');
+  const response = await fetchImpl('https://api.github.com/graphql', {
+    method: 'POST', headers: { Authorization: `Bearer ${repo === source ? sourceToken : targetToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query, variables }), signal: AbortSignal.timeout(30000),
+  });
+  if (!response.ok) throw new Error(`GraphQL read failed: ${response.status}`);
+  const result = await response.json();
+  if (result.errors?.length || !result.data) throw new Error('GraphQL thread read incomplete');
+  return result.data;
 }
-async function syncConversation(aPr, bPr) {
-  // Read both snapshots before writing; only human comments are copied, never bot echoes.
-  const aComments = await list(source, `/issues/${aPr}/comments`);
-  const bComments = await list(target, `/issues/${bPr}/comments`);
-  for (const side of [
-    { originRepo: source, originPr: aPr, originSide: 'A', comments: aComments, existing: bComments, destinationBot: bot, repo: target, pr: bPr },
-    { originRepo: target, originPr: bPr, originSide: 'B', comments: bComments, existing: aComments, destinationBot: sourceBot, repo: source, pr: aPr },
-  ]) {
-    // author_association can be CONTRIBUTOR for an org owner when viewed by an App.
-    // Check actual repository permission instead; no organization Members access is needed.
-    for (const c of side.comments) {
-      if (c.user?.type !== 'User') continue;
-      const key = `${side.originRepo}:${c.user.login}`;
-      if (!conversationPermissions.has(key)) {
-        const result = await api(side.originRepo, `/collaborators/${encodeURIComponent(c.user.login)}/permission`);
-        conversationPermissions.set(key, result.permission);
-      }
-      c.bridge_permission = conversationPermissions.get(key);
-    }
-    for (const copy of conversationCopies(side)) {
-      await api(side.repo, copy.id ? `/issues/comments/${copy.id}` : `/issues/${side.pr}/comments`, {
-        method: copy.id ? 'PATCH' : 'POST', body: { body: copy.body },
-      });
-    }
-  }
+async function syncPairContent(a, b) {
+  return syncContent({ source, target, a, b, sourceBot, bot, api, list, graphql });
 }
-const conversationPermissions = new Map();
 async function relevantPulls(repo) {
   const values = new Map((await list(repo, '/pulls?state=open')).map(p => [p.number, p]));
   // Bound fallback work; older pairs remain reachable via explicit PR events.
@@ -183,8 +154,7 @@ async function run() {
     if (a.draft && !b) continue;
     if (b) b = await api(target, `/pulls/${b.number}`);
     if (b && (b.base.ref !== 'main' || b.head.ref !== `incoming/a-pr-${a.number}` || b.head.repo?.full_name !== target)) throw new Error('PR pair refs no longer match bridge policy');
-    let reviews = b ? await syncReviewFeedback(a.number, b.number) : [];
-    if (b) await syncConversation(a.number, b.number);
+    let reviews = b ? await syncPairContent(a, b) : [];
     const aHead = requireSha(a.head.sha);
     git(['fetch', '--no-tags', aUrl, `refs/pull/${a.number}/head`], sourceToken);
     const fetched = git(['rev-parse', 'FETCH_HEAD']).text;
@@ -247,10 +217,13 @@ async function run() {
       assertPush({ repo: target, source, target, ref: `refs/heads/${branch}` });
       git(['push', bUrl, `${aHead}:refs/heads/${branch}`], targetToken);
     }
-    const body = `${marker}\nContribution from [A PR #${a.number}](${a.html_url}).\n\nInitial source head: \`${aHead}\`. See the source PR status and current branch commits for subsequent updates.\n\n### Merge instruction: preserve contributor identity\n\nPlease select **Create a merge commit** for this contribution. Do not squash or rebase this PR: original commit SHAs, authors and committers must be preserved. This is an instruction to the maintainer, not a restriction enforced by repository settings or branch protection.\n\nB is the source of truth. The controller synchronizes A/main to B/main and closes the accepted source PR only when its original head and B merge result are in main. If original commits are missing, the controller reports the identity issue; it cannot undo a merge or restore identity merely by synchronizing main.`;
+    let body = `${marker}\nContribution from [A PR #${a.number}](${a.html_url}).\n\nInitial source head: \`${aHead}\`. See the source PR status and current branch commits for subsequent updates.\n\n### Merge instruction: preserve contributor identity\n\nPlease select **Create a merge commit** for this contribution. Do not squash or rebase this PR: original commit SHAs, authors and committers must be preserved. This is an instruction to the maintainer, not a restriction enforced by repository settings or branch protection.\n\nB is the source of truth. The controller synchronizes A/main to B/main and closes the accepted source PR only when its original head and B merge result are in main. If original commits are missing, the controller reports the identity issue; it cannot undo a merge or restore identity merely by synchronizing main.`;
+    const sourceBody = `\n\n### Original XBrain/A PR description at creation\n\n${textBlock(a.body ?? '')}`;
+    if (body.length + sourceBody.length < 60000) body += sourceBody;
+    body += '\n\nCurrent descriptions, reviews and inline replies from both sides are preserved in bridge-content comments below. Those comments track edits; this original PR body is not overwritten by the bridge.';
     if (!b) {
       b = await api(target, '/pulls', { method: 'POST', body: { title: `A PR #${a.number}: ${a.title}`, head: branch, base: 'main', body } });
-      await syncConversation(a.number, b.number);
+      reviews = await syncPairContent(a, b);
     }
     await statusComment(a.number, `Waiting for B approval: [PR #${b.number}](${b.html_url}).\n\nTransferred source head: \`${aHead}\`.\n\nGit mergeability: \`${b.mergeable_state ?? 'pending'}\` (conflict status, not approval). Reviews: ${reviewSummary(reviews)}.\n\nRead the mirrored B review comments below for the requested corrections. Review decisions refer to their recorded commit; B must review newer revisions.\n\nA/main remains at accepted B history \`${bSha}\`. Continue changes on this feature branch; do not merge this PR at A.`);
     report.pairs.push({ a: a.number, b: b.number, state: 'pending', sourceHead: aHead, url: b.html_url });

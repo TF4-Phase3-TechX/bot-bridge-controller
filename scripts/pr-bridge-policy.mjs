@@ -56,7 +56,8 @@ export function assertMutation({ repo, source, target, path, method, body }) {
     || (method === 'PATCH' && /^\/issues\/comments\/[1-9][0-9]*$/.test(path)))
     && Object.keys(body).every(key => key === 'body')
     && (repo === source || (typeof body.body === 'string' && (
-      body.body.startsWith(`<!-- bridge-conversation:${source}#`)
+      body.body.startsWith(`<!-- bridge-content:${source}#`)
+      || body.body.startsWith(`<!-- bridge-conversation:${source}#`)
       || body.body.startsWith(`<!-- bridge-source-status:${source}#`))));
   if (!createPR && !editPR && !comment) throw new Error('Mutation outside bridge policy');
 }

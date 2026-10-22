@@ -98,6 +98,7 @@ function fixture(options = {}) {
     const u = new URL(url), method = opts.method || 'GET', body = opts.body && JSON.parse(opts.body);
     calls.push({ path: u.pathname, query: u.search, method, body });
     const reply = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => structuredClone(data) });
+    if (u.pathname === '/graphql') return reply({ data: { repository: { pullRequest: { reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } });
     if (u.pathname === '/installation/repositories') return reply({
       total_count: options.broadToken ? 2 : 1, repositories: [{ full_name: options.wrongRepoToken ? 'Other/repo' : opts.headers.Authorization.endsWith('fake-A') ? config.source : config.target, private: true }],
     });
@@ -204,12 +205,13 @@ test('rewritten A feature branch is blocked per pair without force-push or starv
   assert.equal(r.pairs[1].state, 'pending');
   assert.ok(!f.pushes.some(p => p.at(-1).endsWith('a-pr-2')));
 });
-test('oversized feedback does not prevent the next pair from being processed', async () => {
+test('oversized feedback is split without starving either pair', async () => {
   const f = fixture({ oversizedReview: true }), r = await f.run();
-  assert.equal(r.passed, false);
-  assert.equal(r.pairs[0].state, 'error');
-  assert.equal(r.pairs[1].state, 'pending');
-  assert.match(f.comments.get(config.source + '#2')[0].body, /could not process/);
+  assert.equal(r.passed, true);
+  assert.ok(r.pairs.every(p => p.state === 'pending'));
+  const copies = f.comments.get(config.source + '#2').filter(c => c.body.includes(':review:99:'));
+  assert.ok(copies.length > 1);
+  assert.ok(copies.every(c => c.body.length < 60000));
 });
 test('a Git transport failure is isolated to its pair and still fails the run visibly', async () => {
   const f = fixture({ sourceAhead: true, pushFailure: true }), r = await f.run();
@@ -222,18 +224,19 @@ test('B reopen while A is closed never causes the bot to close B again', async (
   assert.equal(r.passed, true);
   assert.equal(r.pairs.find(p => p.a === 2).state, 'source-closed');
   assert.equal(f.targets[0].state, 'open');
-  assert.ok(f.comments.get(config.target + '#20')[0].body.includes('B still decides'));
+  assert.ok(f.comments.get(config.target + '#20').some(c => c.body.includes('B still decides')));
   assert.ok(!f.calls.some(c => c.method === 'PATCH' && c.path.startsWith('/repos/B/repo/pulls/')));
 });
 test('accepted original history closes A and does not churn its comment on unrelated main advances', async () => {
   const f = fixture({ accepted: true });
   assert.equal((await f.run()).pairs[0].state, 'accepted');
   assert.equal(f.sources[0].state, 'closed');
-  const accepted = f.comments.get(config.source + '#2')[0].body;
+  const status = f.comments.get(config.source + '#2').find(c => c.body.startsWith('<!-- b-authoritative-bridge-status -->'));
+  const accepted = status.body;
   assert.match(accepted, /Original source head/);
   // The accepted message contains the acceptance commit, not a changing main snapshot.
   assert.ok(!accepted.includes('A/main synchronized to B/main:'));
-  const acceptedId = f.comments.get(config.source + '#2')[0].id;
+  const acceptedId = status.id;
   const editsBefore = f.calls.filter(c => c.method === 'PATCH' && c.path.endsWith('/issues/comments/' + acceptedId)).length;
   f.advanceMain();
   assert.equal((await f.run()).passed, true);

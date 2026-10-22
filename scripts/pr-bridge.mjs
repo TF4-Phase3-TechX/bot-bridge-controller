@@ -221,12 +221,7 @@ async function run() {
     }
     if (a.state !== 'open' || a.draft) continue;
     if (included) { await statusComment(a.number, `Source head \`${aHead}\` is already in B/dev. No new destination PR is needed.`); continue; }
-    const baseSha = git(['merge-base', aHead, bDevSha]).text;
-    if (git(['diff', '--name-only', baseSha, aHead, '--', '.github/workflows/']).text) {
-      await statusComment(a.number, 'Blocked: contribution changes workflow files. Maintainer B must handle workflow changes separately; no branch update was sent.');
-      report.pairs.push({ a: a.number, b: b?.number, state: 'blocked-workflow-change', sourceHead: aHead });
-      continue;
-    }
+    // Transfer the original revision, including workflow files. Never execute PR code here.
     const latest = await api(source, `/pulls/${a.number}`);
     if (latest.base.ref !== 'dev' || latest.head.repo?.full_name !== source || latest.head.sha !== aHead || latest.state !== 'open' || latest.draft) {
       report.pairs.push({ a: a.number, state: 'source-changed-retry' }); continue;

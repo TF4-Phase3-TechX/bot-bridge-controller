@@ -95,7 +95,7 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
           permission-workflows: write
-      - name: Token scoped only to repo B without Workflows write
+      - name: Token scoped only to repo B including workflow transport
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510
         id: target
         with:
@@ -105,6 +105,7 @@ jobs:
           repositories: ${{ matrix.targetRepo }}
           permission-contents: write
           permission-pull-requests: write
+          permission-workflows: write
       - name: Transfer PRs and synchronize A to authoritative B main
         env:
           BRIDGE_PAIR_ID: ${{ matrix.id }}

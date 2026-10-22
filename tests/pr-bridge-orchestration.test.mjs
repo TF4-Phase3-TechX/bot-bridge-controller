@@ -8,7 +8,7 @@ const base = sha('1'), main = sha('a'), head = sha('b'), second = sha('c'), bExt
 const now = Date.parse('2026-10-20T12:00:00Z'), recent = '2026-10-20T11:00:00Z', old = '2026-01-01T00:00:00Z';
 
 function fixture(options = {}) {
-  const calls = [], pushes = [], comments = new Map();
+  const calls = [], pushes = [], gitCommands = [], comments = new Map();
   const parents = new Map([[main, [base]], [head, [base]], [second, [base]], [bExtra, [head]], [rewritten, [base]]]);
   const isAncestor = (a, b, visited = new Set()) => {
     if (a === b) return true;
@@ -62,6 +62,7 @@ function fixture(options = {}) {
   const mirrored = new Map();
   const spawnImpl = (_command, raw) => {
     const args = raw.slice(4);
+    gitCommands.push(args);
     if (options.branchFetchFailure && args[0] === 'fetch' && args.includes('--prune')) throw new Error('Branch snapshot unavailable');
     let stdout = '', status = 0;
     if (args[0] === 'fetch' && args[3]?.startsWith('refs/pull/')) {
@@ -151,7 +152,7 @@ function fixture(options = {}) {
     throw new Error(`Unhandled mock API: ${method} ${path}`);
   };
   return {
-    calls, pushes, sources, targets, comments, parents,
+    calls, pushes, gitCommands, sources, targets, comments, parents,
     advanceMain: () => { parents.set(sha('f'), [mainSha]); mainSha = sha('f'); },
     run: () => runBridge({ config, env, fetchImpl, spawnImpl, now }),
   };
@@ -269,10 +270,14 @@ test('an open A PR finds its B pair even if B rejected it outside the history wi
   assert.equal(r.pairs.find(p => p.a === 2).state, 'rejected');
   assert.equal(f.sources[0].state, 'closed');
 });
-test('workflow-changing contribution stays blocked', async () => {
-  const f = fixture({ workflowChange: true }), r = await f.run();
-  assert.ok(r.pairs.every(p => p.state === 'blocked-workflow-change'));
-  assert.equal(f.pushes.length, 0);
+test('workflow-changing contributions retain their original SHA and target dev without executing PR code', async () => {
+  const f = fixture({ workflowChange: true, sourceAhead: true }), r = await f.run();
+  assert.equal(r.passed, true);
+  assert.ok(r.pairs.every(p => p.state === 'pending'));
+  assert.ok(f.pushes.some(p => p.at(-1) === rewritten + ':refs/heads/incoming/a-pr-2'));
+  assert.ok(f.pushes.some(p => p.at(-1) === second + ':refs/heads/incoming/a-pr-1'));
+  assert.equal(f.calls.find(c => c.method === 'POST' && c.path.endsWith('/pulls')).body.base, 'dev');
+  assert.ok(f.gitCommands.every(args => ['fetch', 'rev-parse', 'merge-base', 'push', 'for-each-ref', 'ls-remote', 'cat-file'].includes(args[0])));
 });
 
 

@@ -1,17 +1,32 @@
-# Private contribution controller
+# Contribution bridge controller
 
-B decides whether contributions enter main. Event notifiers at A/B dispatch this trusted controller; the six-hour schedule is a fallback. Three Apps separate A synchronization, B contribution transport, and Actions dispatch.
+Three GitHub Apps separate synchronization into A, PR transport into B, and event dispatch. Contributors open same-repository PRs targeting **dev** at A. B owns review and merge. The controller transfers original commits, creates a paired B/dev PR, mirrors published PR descriptions/comments/reviews, and copies B branch heads back to A.
 
-Code transport keys remain here. A/B each hold the dispatch key (Actions write on this controller), so developers allowed to run workflows at A can use that key. A/main is copied from authoritative B/main, preserving divergent A history in a recovery ref before an atomic replacement with a lease. Only Git objects are transported; contribution code is never executed here.
+Live lab: `TF4-Phase3-TechX/bot-bridge-controller`. Registry opt-in allows its intentionally public sample endpoints.
 
-PR identity is the expected bot author plus the B repository and `incoming/a-pr-N` head branch. Maintainer edits to B title/body are retained. B may append commits; the controller never force-pushes B. Diverged branches get a per-pair status. Closed A does not cause the bot to close B. B still decides. PR body asks for Create a merge commit to preserve original commit identity; it is a human convention, not enforced by merge-method settings.
+## Setup
 
-Open PRs and closed PRs updated within seven days are reconciled; explicit PR events can reach older pairs. Pair-local failures are reported while other pairs continue. Overall failure remains visible. Main synchronization runs before pair processing.
+1. Copy this repository into a controller repository owned by B, with default branch `main`.
+2. Edit `bridge.config.json`: controller repository, App bot logins and unique A/B pairs. Also replace the repository guard in `.github/workflows/controller.yml`. The sample uses `XBrainVN` and `TechX-Corp`; use your actual owners.
+3. Create three GitHub Apps. Sync A: Contents, Pull requests and Workflows read/write, installed only on A repos. Transport B: the same permissions, installed only on B repos. Dispatch: Actions read/write, installed only on the controller. Metadata is read-only; webhooks are not used. Accept new installation permissions after permission changes.
+4. Controller variables: `SOURCE_APP_CLIENT_ID`, `BRIDGE_APP_CLIENT_ID`, `BRIDGE_ENABLED=false`. Controller secrets: `SOURCE_APP_PRIVATE_KEY`, `BRIDGE_APP_PRIVATE_KEY`. Product repo variable/secret: `CONTROLLER_DISPATCH_APP_CLIENT_ID`, `CONTROLLER_DISPATCH_APP_PRIVATE_KEY`. These keys belong to their matching App, not to user PATs.
+5. Bootstrap A/main and A/dev from B without rewriting commit history. Protect A/main and A/dev so only Sync A may update them; protect B/main and B/dev for maintainer review. Keep the controller under trusted maintainers.
+6. Install [the complete notifier](https://github.com/pho-veteran/xora-contribution-controller/blob/main/templates/notifier.yml) on product main/default and dev branches. Replace `A_OWNER`, `A_REPO`, `B_OWNER`, `B_REPO`, `CONTROLLER_REPO`. Push events read their own branch workflow, so update active B branches too. Notifiers never check out PR code. Existing deployment CI must be restricted to its intended repository before mirroring.
+7. Run `node --check scripts/pr-bridge.mjs` and `node --test tests/*.test.mjs` using Node 24. No npm dependencies are required. Enable `BRIDGE_ENABLED=true`; run controller workflow on main without inputs for all pairs, then test a new dev PR.
 
-Set `BRIDGE_ENABLED=true` only after setup and policy checks. Push/PR events test the controller without App keys. Schedule/dispatch runs tests on the event's pinned main revision in the reconcile job before minting scoped App tokens. Policy and reconcile have separate concurrency groups.
+## Behavior
 
-Production must restrict App B from writing or merging B/main and developers from merging A/main using supported GitHub protection. This is separate from merge-method guidance. Treat incoming PR code as untrusted in B CI: no secrets/write tokens in its build/test job. Guard B-only deployment workflows by repository before copying them to A.
+- PRs targeting branches other than dev are not contributions. Drafts without an existing pair are deferred. Push at A does not dispatch; PR synchronization does.
+- B branch pushes trigger reconciliation. A-only branches remain. Open A PR head branches are deferred. Divergence at A is backed up atomically under recovery refs before B history replaces it. No branch deletion or tag sync occurs.
+- B merge: A closes only after original source history and the merge result are in accepted B/dev and A/dev is synchronized. Use **Create a merge commit**, never squash/rebase, if you require this identity policy.
+- Squash/rebase may copy equivalent code while leaving A open with an identity warning. The controller does not accept patch equivalence as original commit identity.
+- B closes without merge: A closes as rejected when its head is unchanged at closure. A closing does not close B; B remains in control. B reopen does not automatically reopen A.
+- PR body snapshots, published reviews, inline replies and thread metadata are mirrored as bot comments, not native approvals. Edits refresh copies; removed content gets a tombstone. Existing B title/body are not overwritten.
+- Workflow files are transported at the original SHA. Both code-writing App installations and token steps require Workflows write. The controller never executes contribution code.
+- Events select one registered pair; manual dispatch without inputs and the six-hour fallback schedule select all. Per-pair concurrency serializes runs. Dispatch success means the request was accepted, not that the PR was synchronized.
 
-Run `node --check scripts/pr-bridge.mjs` and `node --test tests/*.test.mjs`. The suite includes policy, review/comment rendering, real local Git recovery/lease fixtures, and mocked controller orchestration. Live GitHub validation is separate.
+## Public labs versus private deployments
 
-Multiple repository pairs share bridge.config.json, the same scripts, and one workflow. Add a unique id/source/target entry per pair. The secret-free plan job selects one pair for an event or all pairs for a manual/scheduled sweep. Each matrix job gets tokens restricted to its two repositories and has its own concurrency group; fail-fast is disabled. The three Apps and controller secrets are reused. Each A/B repository needs its notifier and dispatch secret configured. Never give a job an installation-wide token.
+Private endpoints are the default. For intentionally public lab repos, set `"allowPublicRepositories": true` in the registry. The exact repository allowlist and one-repository-per-token checks still apply. Keep internal controllers private because summaries/logs can expose contribution content. Public labs must contain only public test data. No credentials are included here; store PEMs in Actions secrets.
+
+This public source repository is a distribution, not your live controller. Publishing or updating it does not deploy changes into another organization.

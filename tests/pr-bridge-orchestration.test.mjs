@@ -103,7 +103,7 @@ function fixture(options = {}) {
     const reply = (data, status = 200) => ({ ok: status >= 200 && status < 300, status, json: async () => structuredClone(data) });
     if (u.pathname === '/graphql') return reply({ data: { repository: { pullRequest: { reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } } });
     if (u.pathname === '/installation/repositories') return reply({
-      total_count: options.broadToken ? 2 : 1, repositories: [{ full_name: options.wrongRepoToken ? 'Other/repo' : opts.headers.Authorization.endsWith('fake-A') ? config.source : config.target, private: true }],
+      total_count: options.broadToken ? 2 : 1, repositories: [{ full_name: options.wrongRepoToken ? 'Other/repo' : opts.headers.Authorization.endsWith('fake-A') ? config.source : config.target, private: !options.publicRepo }],
     });
     const repo = u.pathname.startsWith('/repos/A/') ? config.source : config.target;
     const path = u.pathname.slice(('/repos/' + repo).length), prs = repo === config.source ? sources : targets;
@@ -154,7 +154,7 @@ function fixture(options = {}) {
   return {
     calls, pushes, gitCommands, sources, targets, comments, parents,
     advanceMain: () => { parents.set(sha('f'), [mainSha]); mainSha = sha('f'); },
-    run: () => runBridge({ config, env, fetchImpl, spawnImpl, now }),
+    run: () => runBridge({ config: { ...config, allowPublicRepositories: options.allowPublicRepositories }, env, fetchImpl, spawnImpl, now }),
   };
 }
 
@@ -162,7 +162,7 @@ test('tokens for multiple repositories or a different pair fail before any Git p
   for (const option of [{ broadToken: true }, { wrongRepoToken: true }]) {
     const f = fixture(option), r = await f.run();
     assert.equal(r.passed, false);
-    assert.match(r.error, /exactly its private/);
+    assert.match(r.error, /exactly its registered/);
     assert.equal(f.pushes.length, 0);
   }
 });
@@ -330,4 +330,21 @@ test('a PR retargeted to main after listing is skipped before content or branch 
   assert.ok(r.pairs.every(p=>p.state==='skipped-non-dev'));
   assert.equal(f.calls.filter(c=>c.method!=='GET' && c.path!=='/graphql').length,0);
   assert.equal(f.pushes.length,0);
+});
+
+
+test('public repositories require opt-in without relaxing exact token repository scope', async () => {
+  for (const allowPublicRepositories of [undefined, false, 'true']) {
+    const f = fixture({ publicRepo: true, allowPublicRepositories });
+    const r = await f.run();
+    assert.equal(r.passed, false);
+    assert.match(r.error, /explicit allowPublicRepositories/);
+    assert.equal(f.pushes.length, 0);
+  }
+  assert.equal((await fixture({ publicRepo: true, allowPublicRepositories: true }).run()).passed, true);
+  for (const option of [{ broadToken: true }, { wrongRepoToken: true }]) {
+    const f = fixture({ publicRepo: true, allowPublicRepositories: true, ...option });
+    assert.equal((await f.run()).passed, false);
+    assert.equal(f.pushes.length, 0);
+  }
 });

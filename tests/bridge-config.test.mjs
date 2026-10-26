@@ -46,3 +46,14 @@ test('invalid registry identifiers cannot become matrix or shell inputs', () => 
   }
   assert.throws(() => validateConfig({ ...registry(), pairs: [] }));
 });
+
+
+test('public lab opt-in is explicit, typed and propagated to each pair', () => {
+  const r = registry();
+  assert.equal(pairConfig(r, 'pair-1').allowPublicRepositories, undefined);
+  r.allowPublicRepositories = true;
+  assert.equal(pairConfig(r, 'pair-1').allowPublicRepositories, true);
+  for (const invalid of ['true', 1, null]) {
+    assert.throws(() => validateConfig({ ...r, allowPublicRepositories: invalid }));
+  }
+});

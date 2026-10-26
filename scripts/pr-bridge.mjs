@@ -103,7 +103,8 @@ async function run() {
     });
     if (!response.ok) throw new Error('Cannot verify installation token scope');
     const scope = await response.json();
-    if (scope.total_count !== 1 || scope.repositories[0]?.full_name !== expected || !scope.repositories[0]?.private) throw new Error('Token must cover exactly its private repository');
+    if (scope.total_count !== 1 || scope.repositories[0]?.full_name !== expected) throw new Error('Token must cover exactly its registered repository');
+    if (scope.repositories[0]?.private !== true && config.allowPublicRepositories !== true) throw new Error('Public repository requires explicit allowPublicRepositories opt-in');
   }
   const aUrl = `https://github.com/${source}.git`, bUrl = `https://github.com/${target}.git`;
   git(['fetch', '--no-tags', aUrl, '+refs/heads/main:refs/remotes/bridge/a-main'], sourceToken);

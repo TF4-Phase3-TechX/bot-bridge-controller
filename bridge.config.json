@@ -3,7 +3,16 @@
   "bot": "techx-vihnnnn-bridge-lab[bot]",
   "sourceBot": "techx-a-sync-lab[bot]",
   "pairs": [
-    { "id": "lab", "source": "Vihnnnn/bot-bridge-lab", "target": "TF4-Phase3-TechX/bot-bridge-lab" },
-    { "id": "multi-lab", "source": "Vihnnnn/bot-bridge-multi-lab", "target": "TF4-Phase3-TechX/bot-bridge-multi-lab" }
-  ]
+    {
+      "id": "lab",
+      "source": "Vihnnnn/bot-bridge-lab",
+      "target": "TF4-Phase3-TechX/bot-bridge-lab"
+    },
+    {
+      "id": "multi-lab",
+      "source": "Vihnnnn/bot-bridge-multi-lab",
+      "target": "TF4-Phase3-TechX/bot-bridge-multi-lab"
+    }
+  ],
+  "allowPublicRepositories": true
 }

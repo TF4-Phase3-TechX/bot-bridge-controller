@@ -11,6 +11,7 @@ export function validateConfig(value) {
     || !Array.isArray(value.pairs) || !value.pairs.length || value.pairs.length > 256) {
     throw new Error('Invalid bridge registry');
   }
+  if (value.allowPublicRepositories !== undefined && typeof value.allowPublicRepositories !== 'boolean') throw new Error('allowPublicRepositories must be boolean');
   const ids = new Set(), repos = new Set([value.controllerRepo.toLowerCase()]);
   for (const pair of value.pairs) {
     if (!pair || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(pair.id ?? '') || ids.has(pair.id)
@@ -32,7 +33,7 @@ export function pairConfig(registry, id) {
   validateConfig(registry);
   const pair = registry.pairs.find(p => p.id === id);
   if (!pair) throw new Error('Unknown bridge pair');
-  return { source: pair.source, target: pair.target, controllerRepo: registry.controllerRepo, bot: registry.bot, sourceBot: registry.sourceBot };
+  return { source: pair.source, target: pair.target, controllerRepo: registry.controllerRepo, bot: registry.bot, sourceBot: registry.sourceBot, ...(registry.allowPublicRepositories === true ? { allowPublicRepositories: true } : {}) };
 }
 
 export function planPairs(registry, env = {}) {

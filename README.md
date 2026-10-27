@@ -1,6 +1,6 @@
 # Public contribution bridge lab controller
 
-Live controller for `Vihnnnn` (A) and `TF4-Phase3-TechX` (B). See `bridge.config.json` for both registered pairs. Contributors open PRs into A/dev; B reviews and merges into B/dev. Notifiers automatically dispatch this controller. A six-hour scheduled sweep is a fallback.
+Live controller for `Vihnnnn` (A) and `TF4-Phase3-TechX` (B). See `bridge.config.json` for both registered pairs. Each pair declares branch: dev or main (default main). Contributors open PRs only into that configured branch at A; B reviews and merges into the same branch at B. Notifiers automatically dispatch this controller. A six-hour scheduled sweep is a fallback.
 
 ## Public lab repositories
 
@@ -23,4 +23,10 @@ B owns review and merge. Use Create a merge commit to preserve original commit i
 
 PR bodies, published reviews and comments are preserved as bot comments; they are not native approvals. Workflow files are transported without executing PR code inside the controller. Both transport App installations and token steps need Workflows write.
 
-Run `node --check scripts/pr-bridge.mjs` and `node --test tests/*.test.mjs` with Node 24; no npm install is needed. The public sample tests include real local Git fixtures and mocked API orchestration. Historical lab PRs may refer to older main-only behavior; the current contribution target is dev.
+Run `node --check scripts/pr-bridge.mjs` and `node --test tests/*.test.mjs` with Node 24; no npm install is needed. The public sample tests include real local Git fixtures and mocked API orchestration. Historical lab PRs may refer to older main-only behavior; the current target is read from each registry pair.
+
+## Status dashboard and notifier filters
+
+Render the notifier for a registered pair with `node scripts/render-notifier.mjs <pair-id> <output.yml>`. Internal B PR events and Transport push echoes are filtered; human B pushes and bridge reviews/comments still notify.
+
+`status.py` reads the registry branch and bot identity, paginates PRs, distinguishes latest job from latest successful reconcile, and fails on incomplete API reads. `publish.py` updates an existing Confluence page, preserves title, and retries one version conflict. `.github/workflows/status.yml` runs separately from reconciliation. Confluence publication stays disabled until credentials and page variables are supplied. Private deployments require a separate read-only Status App; public labs may explicitly use STATUS_PUBLIC_LAB=true.

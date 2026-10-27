@@ -12,7 +12,8 @@ export async function runBridge({
   config,
   env = process.env, fetchImpl = fetch, spawnImpl = spawnSync, now = Date.now(),
 } = {}) {
-const { source, target, bot, sourceBot, controllerRepo } = config;
+const { source, target, bot, sourceBot, controllerRepo, branch: pairBranch = 'main' } = config;
+if (!['main', 'dev'].includes(pairBranch)) throw new Error('Contribution branch must be main or dev');
 const sourceToken = env.SOURCE_TOKEN;
 const targetToken = env.BRIDGE_APP_TOKEN;
 const report = { source, target, controller: controllerRepo, pairs: [], run: `https://github.com/${controllerRepo}/actions/runs/${env.GITHUB_RUN_ID}` };
@@ -38,7 +39,7 @@ function git(args, token, allowed = [0]) {
 }
 const ancestor = (a, b) => git(['merge-base', '--is-ancestor', requireSha(a), requireSha(b)], null, [0, 1]).status === 0;
 async function api(repo, path, { method = 'GET', body } = {}) {
-  assertMutation({ repo, source, target, path, method, body });
+  assertMutation({ repo, source, target, path, method, body, branch: pairBranch });
   const token = repo === source ? sourceToken : targetToken;
   const response = await fetchImpl(`https://api.github.com/repos/${repo}${path}`, {
     method, headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'Content-Type': 'application/json', 'X-GitHub-Api-Version': '2022-11-28' },
@@ -138,7 +139,7 @@ async function run() {
     if (n && !prs.has(n)) prs.set(n, await api(source, `/pulls/${n}`));
   }
   for (const initial of prs.values()) {
-    if (initial.base.ref !== 'dev' || initial.head.repo?.full_name !== source) continue;
+    if (initial.base.ref !== pairBranch || initial.head.repo?.full_name !== source) continue;
     let a = initial, b;
     try {
     const marker = `<!-- b-authoritative-bridge:${source}#${initial.number} -->`;
@@ -152,15 +153,15 @@ async function run() {
     b = matches[0];
     if (!b && initial.state !== 'open') continue;
     a = await api(source, `/pulls/${initial.number}`);
-    if (a.base.ref !== 'dev' || a.head.repo?.full_name !== source) {
+    if (a.base.ref !== pairBranch || a.head.repo?.full_name !== source) {
       report.pairs.push({ a: a.number, state: 'skipped-non-dev' }); continue;
     }
-    git(['fetch', '--no-tags', bUrl, '+refs/heads/dev:refs/remotes/bridge/b-dev'], targetToken);
+    git(['fetch', '--no-tags', bUrl, `+refs/heads/${pairBranch}:refs/remotes/bridge/b-dev`], targetToken);
     const bDevSha = requireSha(git(['rev-parse', 'refs/remotes/bridge/b-dev']).text);
-    if ((await api(target, '/git/ref/heads/dev')).object.sha !== bDevSha) throw new Error('B/dev changed during fetch; retry');
+    if ((await api(target, `/git/ref/heads/${pairBranch}`)).object.sha !== bDevSha) throw new Error('B/${pairBranch} changed during fetch; retry');
     if (a.draft && !b) continue;
     if (b) b = await api(target, `/pulls/${b.number}`);
-    if (b && (b.base.ref !== 'dev' || b.head.ref !== `incoming/a-pr-${a.number}` || b.head.repo?.full_name !== target)) throw new Error('PR pair refs no longer match bridge policy');
+    if (b && (b.base.ref !== pairBranch || b.head.ref !== `incoming/a-pr-${a.number}` || b.head.repo?.full_name !== target)) throw new Error('PR pair refs no longer match bridge policy');
     let reviews = b ? await syncPairContent(a, b) : [];
     const aHead = requireSha(a.head.sha);
     git(['fetch', '--no-tags', aUrl, `refs/pull/${a.number}/head`], sourceToken);
@@ -190,41 +191,41 @@ async function run() {
         if (decision === 'accepted') {
           // Acceptance is based on dev, never main; copy accepted B/dev before closing A.
           const branches = await syncBranches({ source, target, sourceToken, targetToken, git, api, list, ancestor });
-          if (branches.some(row => row.branch === 'dev' && ['error', 'deferred-open-pr'].includes(row.state))
-            || (await api(target, '/git/ref/heads/dev')).object.sha !== bDevSha
-            || (await api(source, '/git/ref/heads/dev')).object.sha !== bDevSha) {
-            throw new Error('Accepted B/dev is not synchronized to A/dev; retry before closing source PR');
+          if (branches.some(row => row.branch === pairBranch && ['error', 'deferred-open-pr'].includes(row.state))
+            || (await api(target, `/git/ref/heads/${pairBranch}`)).object.sha !== bDevSha
+            || (await api(source, `/git/ref/heads/${pairBranch}`)).object.sha !== bDevSha) {
+            throw new Error('Accepted B target branch is not synchronized to A target branch; retry before closing source PR');
           }
         }
         const message = decision === 'accepted'
-          ? `Accepted in [B PR #${b.number}](${b.html_url}).\n\nB merge result: \`${b.merge_commit_sha}\`, verified in B/dev and synchronized to A/dev.\n\nOriginal source head \`${aHead}\` is included in accepted history; original commit identities are preserved.\n\nNo independent merge was performed at A.`
+          ? `Accepted in [B PR #${b.number}](${b.html_url}).\n\nB merge result: \`${b.merge_commit_sha}\`, verified in B/${pairBranch} and synchronized to A/${pairBranch}.\n\nOriginal source head \`${aHead}\` is included in accepted history; original commit identities are preserved.\n\nNo independent merge was performed at A.`
           : decision === 'identity-not-preserved'
-            ? `Identity constraint not satisfied for [B PR #${b.number}](${b.html_url}): original source head \`${aHead}\` is missing from B/dev. Use Create a merge commit; squash/rebase are unsupported. A/dev still follows B/dev, but this contribution is not marked accepted and no open A PR is closed by this decision. Maintainer must inspect the rewritten history.`
+            ? `Identity constraint not satisfied for [B PR #${b.number}](${b.html_url}): original source head \`${aHead}\` is missing from B/${pairBranch}. Use Create a merge commit; squash/rebase are unsupported. A/${pairBranch} still follows B/${pairBranch}, but this contribution is not marked accepted and no open A PR is closed by this decision. Maintainer must inspect the rewritten history.`
           : decision === 'new-commits-pending'
-            ? `B merged [PR #${b.number}](${b.html_url}), but current A head \`${aHead}\` contains unaccepted commits. Dev is synchronized only to accepted B history. Submit the remaining changes in a new PR from current dev; this PR is not marked complete.`
+            ? `B merged [PR #${b.number}](${b.html_url}), but current A head \`${aHead}\` contains unaccepted commits. ${pairBranch} is synchronized only to accepted B history. Submit the remaining changes in a new PR from current ${pairBranch}; this PR is not marked complete.`
             : decision === 'merge-result-not-in-dev'
-              ? `B merged [PR #${b.number}](${b.html_url}), but its merge result \`${b.merge_commit_sha}\` is not in the B/dev snapshot \`${bDevSha}\` synchronized by this run. This PR is not marked complete; retry against current B/dev or inspect a history rewrite.`
+              ? `B merged [PR #${b.number}](${b.html_url}), but its merge result \`${b.merge_commit_sha}\` is not in the B/${pairBranch} snapshot \`${bDevSha}\` synchronized by this run. This PR is not marked complete; retry against current B/${pairBranch} or inspect a history rewrite.`
             : decision === 'source-closed'
               ? `A PR is closed; [B PR #${b.number}](${b.html_url}) remains under B's control. No merge or closure is performed at B. Reopen A if further contribution is needed.`
-              : `Bridge status: **${decision}**. [B PR #${b.number}](${b.html_url}). No unaccepted code is added to either dev; this pair will not be recreated automatically.`;
+              : `Bridge status: **${decision}**. [B PR #${b.number}](${b.html_url}). No unaccepted code is added to either ${pairBranch}; this pair will not be recreated automatically.`;
         await statusComment(a.number, message);
         // Refresh immediately before closing, so a newer source head is not silently discarded.
         a = await api(source, `/pulls/${a.number}`);
-        if (a.base.ref === 'dev' && a.head.repo?.full_name === source && a.state === 'open' && a.head.sha === aHead && ['accepted', 'rejected'].includes(decision)) {
+        if (a.base.ref === pairBranch && a.head.repo?.full_name === source && a.state === 'open' && a.head.sha === aHead && ['accepted', 'rejected'].includes(decision)) {
           await api(source, `/pulls/${a.number}`, { method: 'PATCH', body: { state: 'closed' } });
         }
         continue;
       }
       if (!sourceIncludedInBHead && !ancestor(b.head.sha, aHead)) {
-        await statusComment(a.number, `Blocked: incoming branch on [B PR #${b.number}](${b.html_url}) diverged from A head \`${aHead}\`. B changes are preserved; no force-push is performed. Coordinate with B or open a new A PR from current A/dev. Other PRs continue processing.`);
+        await statusComment(a.number, `Blocked: incoming branch on [B PR #${b.number}](${b.html_url}) diverged from A head \`${aHead}\`. B changes are preserved; no force-push is performed. Coordinate with B or open a new A PR from current A/${pairBranch}. Other PRs continue processing.`);
         report.pairs.push({ a: a.number, b: b.number, state: 'incoming-diverged', sourceHead: aHead }); continue;
       }
     }
     if (a.state !== 'open' || a.draft) continue;
-    if (included) { await statusComment(a.number, `Source head \`${aHead}\` is already in B/dev. No new destination PR is needed.`); continue; }
+    if (included) { await statusComment(a.number, `Source head \`${aHead}\` is already in B/${pairBranch}. No new destination PR is needed.`); continue; }
     // Transfer the original revision, including workflow files. Never execute PR code here.
     const latest = await api(source, `/pulls/${a.number}`);
-    if (latest.base.ref !== 'dev' || latest.head.repo?.full_name !== source || latest.head.sha !== aHead || latest.state !== 'open' || latest.draft) {
+    if (latest.base.ref !== pairBranch || latest.head.repo?.full_name !== source || latest.head.sha !== aHead || latest.state !== 'open' || latest.draft) {
       report.pairs.push({ a: a.number, state: 'source-changed-retry' }); continue;
     }
     const branch = `incoming/a-pr-${a.number}`;
@@ -232,15 +233,15 @@ async function run() {
       assertPush({ repo: target, source, target, ref: `refs/heads/${branch}` });
       git(['push', bUrl, `${aHead}:refs/heads/${branch}`], targetToken);
     }
-    let body = `${marker}\nContribution from [A PR #${a.number}](${a.html_url}).\n\nInitial source head: \`${aHead}\`. See the source PR status and current branch commits for subsequent updates.\n\n### Merge instruction: preserve contributor identity\n\nPlease select **Create a merge commit** for this contribution. Do not squash or rebase this PR: original commit SHAs, authors and committers must be preserved. This is an instruction to the maintainer, not a restriction enforced by repository settings or branch protection.\n\nB is the source of truth. The controller synchronizes A/dev to B/dev and closes the accepted source PR only when its original head and B merge result are in dev. If original commits are missing, the controller reports the identity issue; it cannot undo a merge or restore identity merely by synchronizing dev.`;
+    let body = `${marker}\nContribution from [A PR #${a.number}](${a.html_url}).\n\nInitial source head: \`${aHead}\`. See the source PR status and current branch commits for subsequent updates.\n\n### Merge instruction: preserve contributor identity\n\nPlease select **Create a merge commit** for this contribution. Do not squash or rebase this PR: original commit SHAs, authors and committers must be preserved. This is an instruction to the maintainer, not a restriction enforced by repository settings or branch protection.\n\nB is the source of truth. The controller synchronizes A/${pairBranch} to B/${pairBranch} and closes the accepted source PR only when its original head and B merge result are in ${pairBranch}. If original commits are missing, the controller reports the identity issue; it cannot undo a merge or restore identity merely by synchronizing ${pairBranch}.`;
     const sourceBody = `\n\n### Original XBrain/A PR description at creation\n\n${textBlock(a.body ?? '')}`;
     if (body.length + sourceBody.length < 60000) body += sourceBody;
     body += '\n\nCurrent descriptions, reviews and inline replies from both sides are preserved in bridge-content comments below. Those comments track edits; this original PR body is not overwritten by the bridge.';
     if (!b) {
-      b = await api(target, '/pulls', { method: 'POST', body: { title: `A PR #${a.number}: ${a.title}`, head: branch, base: 'dev', body } });
+      b = await api(target, '/pulls', { method: 'POST', body: { title: `A PR #${a.number}: ${a.title}`, head: branch, base: pairBranch, body } });
       reviews = await syncPairContent(a, b);
     }
-    await statusComment(a.number, `Waiting for B approval: [PR #${b.number}](${b.html_url}).\n\nTransferred source head: \`${aHead}\`.\n\nGit mergeability: \`${b.mergeable_state ?? 'pending'}\` (conflict status, not approval). Reviews: ${reviewSummary(reviews)}.\n\nRead the mirrored B review comments below for the requested corrections. Review decisions refer to their recorded commit; B must review newer revisions.\n\nAuthoritative B/dev history is \`${bDevSha}\`. Continue changes on this feature branch; do not merge this PR at A.`);
+    await statusComment(a.number, `Waiting for B approval: [PR #${b.number}](${b.html_url}).\n\nTransferred source head: \`${aHead}\`.\n\nGit mergeability: \`${b.mergeable_state ?? 'pending'}\` (conflict status, not approval). Reviews: ${reviewSummary(reviews)}.\n\nRead the mirrored B review comments below for the requested corrections. Review decisions refer to their recorded commit; B must review newer revisions.\n\nAuthoritative B/${pairBranch} history is \`${bDevSha}\`. Continue changes on this feature branch; do not merge this PR at A.`);
     report.pairs.push({ a: a.number, b: b.number, state: 'pending', sourceHead: aHead, url: b.html_url });
     } catch (error) {
       report.pairs.push({ a: initial.number, b: b?.number, state: 'error', error: error.message });

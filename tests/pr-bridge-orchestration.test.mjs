@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { runBridge } from '../scripts/pr-bridge.mjs';
 
-const config = { source: 'A/repo', target: 'B/repo', bot: 'bridge[bot]', sourceBot: 'sync[bot]', controllerRepo: 'B/controller' };
+const config = { source: 'A/repo', target: 'B/repo', bot: 'bridge[bot]', sourceBot: 'sync[bot]', controllerRepo: 'B/controller', branch: 'dev' };
 const sha = c => c.repeat(40);
 const base = sha('1'), main = sha('a'), head = sha('b'), second = sha('c'), bExtra = sha('d'), rewritten = sha('e');
 const now = Date.parse('2026-10-20T12:00:00Z'), recent = '2026-10-20T11:00:00Z', old = '2026-01-01T00:00:00Z';
@@ -18,14 +18,14 @@ function fixture(options = {}) {
   };
   const a = n => ({
     number: n, state: 'open', draft: false, title: 'Contribution ' + n,
-    updated_at: recent, base: { ref: 'dev' },
+    updated_at: recent, base: { ref: options.branch ?? 'dev' },
     head: { sha: n === 2 ? head : second, ref: 'feature-' + n, repo: { full_name: config.source } },
     html_url: `https://github.com/${config.source}/pull/${n}`,
   });
   const sources = [a(2), a(1)];
   const target = {
     number: 20, state: 'open', merged_at: null, merge_commit_sha: null, updated_at: recent,
-    user: { login: config.bot, type: 'Bot' }, base: { ref: 'dev' },
+    user: { login: config.bot, type: 'Bot' }, base: { ref: options.branch ?? 'dev' },
     head: { sha: head, ref: 'incoming/a-pr-2', repo: { full_name: config.target } },
     body: 'Maintainer notes, no bridge marker.', title: 'Maintainer custom title',
     html_url: `https://github.com/${config.target}/pull/20`,
@@ -154,7 +154,7 @@ function fixture(options = {}) {
   return {
     calls, pushes, gitCommands, sources, targets, comments, parents,
     advanceMain: () => { parents.set(sha('f'), [mainSha]); mainSha = sha('f'); },
-    run: () => runBridge({ config: { ...config, allowPublicRepositories: options.allowPublicRepositories }, env, fetchImpl, spawnImpl, now }),
+    run: () => runBridge({ config: { ...config, branch: options.branch ?? 'dev', allowPublicRepositories: options.allowPublicRepositories }, env, fetchImpl, spawnImpl, now }),
   };
 }
 
@@ -348,3 +348,16 @@ test('public repositories require opt-in without relaxing exact token repository
     assert.equal(f.pushes.length, 0);
   }
 });
+
+for (const branch of ['main', 'dev']) {
+  test(`configured ${branch} accepts only that PR target`, async () => {
+    const f = fixture({ branch });
+    const result = await f.run();
+    assert.equal(result.passed, true, result.error);
+    assert.equal(f.targets.at(-1).base.ref, branch);
+    const wrong = fixture({ branch });
+    wrong.sources.forEach(p => p.base.ref = branch === 'dev' ? 'main' : 'dev');
+    await wrong.run();
+    assert.equal(wrong.calls.some(c => c.method === 'POST' && c.path.endsWith('/pulls')), false);
+  });
+}

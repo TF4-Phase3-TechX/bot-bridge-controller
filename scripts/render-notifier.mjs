@@ -1,0 +1,11 @@
+import { readFileSync, writeFileSync } from 'node:fs';
+import { loadConfig } from './bridge-config.mjs';
+const [id, output] = process.argv.slice(2);
+const registry = loadConfig(), pair = registry.pairs.find(p => p.id === id);
+if (!pair || !output) throw new Error('Usage: node scripts/render-notifier.mjs <registered-pair-id> <output.yml>');
+const [aOwner,aRepo] = pair.source.split('/'), [bOwner,bRepo] = pair.target.split('/');
+const [controllerOwner, controllerRepo] = registry.controllerRepo.split('/');
+if (controllerOwner !== bOwner) throw new Error('Template expects controller in target organization');
+let text = readFileSync(new URL('../templates/notifier/notify-controller.yml', import.meta.url),'utf8');
+for (const [key,value] of Object.entries({A_OWNER:aOwner,A_REPO:aRepo,B_OWNER:bOwner,B_REPO:bRepo,CONTROLLER_REPO:controllerRepo,TARGET_BRANCH:pair.branch ?? 'main',TRANSPORT_BOT:registry.bot.replace('[bot]','')})) text = text.replaceAll(key,value);
+writeFileSync(output,text);

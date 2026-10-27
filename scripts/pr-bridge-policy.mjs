@@ -45,11 +45,11 @@ export function pairDecision({ merged, closed, sourceClosed, headIncluded, merge
   return 'pending';
 }
 
-export function assertMutation({ repo, source, target, path, method, body }) {
+export function assertMutation({ repo, source, target, path, method, body, branch = 'main' }) {
   if (![source, target].includes(repo)) throw new Error('Repository outside bridge scope');
   if (method === 'GET') return;
   const createPR = repo === target && method === 'POST' && path === '/pulls'
-    && body.base === 'dev' && /^incoming\/a-pr-[1-9][0-9]*$/.test(body.head);
+    && body.base === branch && /^incoming\/a-pr-[1-9][0-9]*$/.test(body.head);
   const editPR = repo === source && method === 'PATCH' && /^\/pulls\/[1-9][0-9]*$/.test(path)
     && Object.keys(body).length === 1 && body.state === 'closed';
   const comment = ((method === 'POST' && /^\/issues\/[1-9][0-9]*\/comments$/.test(path))

@@ -1,0 +1,81 @@
+name: Contribution sync status
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 1-11 * * 1-5'
+  push:
+    branches: [main]
+    paths: [status.py, publish.py, tests/test_status.py, .github/workflows/status.yml]
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+concurrency:
+  group: contribution-sync-status
+  cancel-in-progress: false
+
+jobs:
+  status:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Test status collector and publisher contract
+        run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Validate GitHub authentication mode
+        env:
+          STATUS_APP_CLIENT_ID: ${{ vars.STATUS_APP_CLIENT_ID }}
+          STATUS_PUBLIC_LAB: ${{ vars.STATUS_PUBLIC_LAB }}
+        run: |
+          if [ -z "$STATUS_APP_CLIENT_ID" ] && [ "$STATUS_PUBLIC_LAB" != "true" ]; then
+            echo 'Private deployments require the read-only Status App; public fallback is lab-only.'
+            exit 1
+          fi
+      - name: Read-only token for controller and registered B repositories
+        id: status-app
+        if: vars.STATUS_APP_CLIENT_ID != ''
+        uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510
+        with:
+          client-id: ${{ vars.STATUS_APP_CLIENT_ID }}
+          private-key: ${{ secrets.STATUS_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          permission-actions: read
+          permission-contents: read
+          permission-pull-requests: read
+      - name: Collect complete GitHub snapshot and render ADF
+        env:
+          GH_TOKEN: ${{ steps.status-app.outputs.token || github.token }}
+          CONTROLLER_REPO: ${{ github.repository }}
+          STATUS_APP_CLIENT_ID: ${{ vars.STATUS_APP_CLIENT_ID }}
+        run: |
+          args=()
+          if [ -z "$STATUS_APP_CLIENT_ID" ]; then args+=(--public-lab); fi
+          python status.py --controller "$CONTROLLER_REPO" --out status.json --snapshot snapshot.json "${args[@]}"
+      - name: Keep generated output for inspection
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: contribution-sync-status
+          path: |
+            status.json
+            snapshot.json
+          if-no-files-found: error
+          retention-days: 7
+      - name: Publish the existing Confluence page
+        if: vars.CONFLUENCE_PUBLISH_ENABLED == 'true' && github.event_name != 'push'
+        env:
+          CONFLUENCE_EMAIL: ${{ secrets.CONFLUENCE_EMAIL }}
+          CONFLUENCE_API_TOKEN: ${{ secrets.CONFLUENCE_API_TOKEN }}
+          CONFLUENCE_CLOUD_ID: ${{ vars.CONFLUENCE_CLOUD_ID }}
+          CONFLUENCE_PAGE_ID: ${{ vars.CONFLUENCE_PAGE_ID }}
+        run: python publish.py status.json
+      - name: Report collection-only mode explicitly
+        if: vars.CONFLUENCE_PUBLISH_ENABLED != 'true' || github.event_name == 'push'
+        run: echo 'GitHub snapshot generated. Confluence publication was skipped; this run is not proof of a live page update.' >> "$GITHUB_STEP_SUMMARY"

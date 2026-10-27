@@ -15,7 +15,7 @@ export function validateConfig(value) {
   const ids = new Set(), repos = new Set([value.controllerRepo.toLowerCase()]);
   for (const pair of value.pairs) {
     if (!pair || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(pair.id ?? '') || ids.has(pair.id)
-      || !repo.test(pair.source ?? '') || !repo.test(pair.target ?? '')) throw new Error('Invalid or duplicate pair');
+      || !repo.test(pair.source ?? '') || !repo.test(pair.target ?? '') || !['main', 'dev'].includes(pair.branch ?? 'main')) throw new Error('Invalid or duplicate pair');
     ids.add(pair.id);
     for (const name of [pair.source, pair.target]) {
       if (repos.has(name.toLowerCase())) throw new Error('A repository may belong to only one pair; controller must remain separate');
@@ -33,7 +33,7 @@ export function pairConfig(registry, id) {
   validateConfig(registry);
   const pair = registry.pairs.find(p => p.id === id);
   if (!pair) throw new Error('Unknown bridge pair');
-  return { source: pair.source, target: pair.target, controllerRepo: registry.controllerRepo, bot: registry.bot, sourceBot: registry.sourceBot, ...(registry.allowPublicRepositories === true ? { allowPublicRepositories: true } : {}) };
+  return { source: pair.source, target: pair.target, branch: pair.branch ?? 'main', controllerRepo: registry.controllerRepo, bot: registry.bot, sourceBot: registry.sourceBot, ...(registry.allowPublicRepositories === true ? { allowPublicRepositories: true } : {}) };
 }
 
 export function planPairs(registry, env = {}) {

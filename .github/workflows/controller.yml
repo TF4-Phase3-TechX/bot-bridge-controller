@@ -8,11 +8,11 @@ on:
         required: false
         type: string
       source_sha:
-        description: Event SHA for traceability; controller reads actual PRs and B main
+        description: Event SHA for traceability; controller reads actual PRs and the configured branch
         required: false
         type: string
       source_run_id:
-        description: B notification workflow run ID
+        description: Source notification workflow run ID
         required: false
         type: string
       source_event:
@@ -45,6 +45,7 @@ jobs:
         with:
           persist-credentials: false
       - run: node --check scripts/pr-bridge.mjs && node --test tests/*.test.mjs
+      - run: python -m unittest discover -s tests -p 'test_*.py' -v
   plan:
     if: vars.BRIDGE_ENABLED == 'true' && github.repository == 'TF4-Phase3-TechX/bot-bridge-controller' && github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
@@ -106,7 +107,7 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
           permission-workflows: write
-      - name: Transfer PRs and synchronize A to authoritative B main
+      - name: Transfer PRs and synchronize authoritative B branches
         env:
           BRIDGE_PAIR_ID: ${{ matrix.id }}
           SOURCE_TOKEN: ${{ steps.source.outputs.token }}

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { assertMutation, assertPush } from '../scripts/pr-bridge-policy.mjs';
 
 const source = 'A/repo', target = 'B/repo';
-const mutation = input => assertMutation({ source, target, repo: target, ...input });
+const mutation = input => assertMutation({ source, target, repo: target, branch: 'dev', ...input });
 test('B may receive a paired PR but never a merge or reference API mutation', () => {
   assert.doesNotThrow(() => mutation({ method: 'POST', path: '/pulls', body: { head: 'incoming/a-pr-2', base: 'dev' } }));
   for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {

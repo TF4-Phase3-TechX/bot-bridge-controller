@@ -36,7 +36,7 @@ test('repository ownership is unambiguous, including casing and controller overl
 });
 test('pair config passes only its endpoints and the shared three-app setup', () => {
   assert.deepEqual(pairConfig(registry(), 'pair-7'), {
-    source: 'A/repo-7', target: 'B/repo-7', controllerRepo: 'B/controller', bot: 'transport[bot]', sourceBot: 'sync[bot]',
+    source: 'A/repo-7', target: 'B/repo-7', branch: 'main', controllerRepo: 'B/controller', bot: 'transport[bot]', sourceBot: 'sync[bot]',
   });
   assert.throws(() => pairConfig(registry(), 'unregistered'));
 });
@@ -56,4 +56,13 @@ test('public lab opt-in is explicit, typed and propagated to each pair', () => {
   for (const invalid of ['true', 1, null]) {
     assert.throws(() => validateConfig({ ...r, allowPublicRepositories: invalid }));
   }
+});
+
+test('target branch is explicit dev or default main; other targets rejected', () => {
+  const r = registry();
+  assert.equal(pairConfig(r, 'pair-1').branch, 'main');
+  r.pairs[0].branch = 'dev';
+  assert.equal(pairConfig(r, 'pair-1').branch, 'dev');
+  r.pairs[0].branch = 'feature/invalid';
+  assert.throws(() => validateConfig(r));
 });

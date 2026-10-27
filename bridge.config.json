@@ -6,12 +6,16 @@
     {
       "id": "lab",
       "source": "Vihnnnn/bot-bridge-lab",
-      "target": "TF4-Phase3-TechX/bot-bridge-lab"
+      "target": "TF4-Phase3-TechX/bot-bridge-lab",
+      "branch": "dev",
+      "team": "Lab dev"
     },
     {
       "id": "multi-lab",
       "source": "Vihnnnn/bot-bridge-multi-lab",
-      "target": "TF4-Phase3-TechX/bot-bridge-multi-lab"
+      "target": "TF4-Phase3-TechX/bot-bridge-multi-lab",
+      "branch": "main",
+      "team": "Lab main"
     }
   ],
   "allowPublicRepositories": true

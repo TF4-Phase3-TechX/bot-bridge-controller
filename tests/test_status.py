@@ -87,7 +87,13 @@ class StatusTests(unittest.TestCase):
         self.assertTrue(any("base=main" in p for p in api.paths))
         adf=build_doc([data],NOW)
         self.assertEqual(adf["type"],"doc")
-        self.assertIn("Last successful reconcile",json.dumps(adf))
+        self.assertIn("Last successful sync",json.dumps(adf))
+        self.assertEqual(adf["content"][0]["type"], "panel")
+        self.assertEqual(adf["content"][0]["attrs"]["panelType"], "info")
+        table = next(n for n in adf["content"] if n["type"] == "table")
+        self.assertTrue(all(len(row["content"]) == 7 for row in table["content"]))
+        self.assertIn("https://github.com/B/controller", json.dumps(adf))
+        self.assertIn("No successful sync", json.dumps(build_doc([{**data,"rows":[{**a,"stale":True}]}],NOW)))
     def test_incomplete_reads_fail_instead_of_reporting_zero(self):
         with self.assertRaisesRegex(RuntimeError,"403"): collect(Fixture(),Fixture(True),CTRL,now=NOW)
     def test_missing_history_is_not_green(self):

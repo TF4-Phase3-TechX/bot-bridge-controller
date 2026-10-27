@@ -163,21 +163,30 @@ def cell(*inline, header=False):
 
 def build_doc(sections, now=None):
     now = now or datetime.now(ICT)
-    content = [{"type": "paragraph", "content": [text(f"Generated {now.astimezone(ICT):%H:%M %d/%m/%Y} (ICT). Latest reconcile job status; OK does not mean every PR was accepted. Missing history is bounded by the scan limit. Do not edit this generated page manually.")]}]
+    content = [{"type": "panel", "attrs": {"panelType": "info"}, "content": [
+        {"type": "paragraph", "content": [text(
+            f"This page is updated automatically by a bot. Do not edit it manually. Last updated {now.astimezone(ICT):%H:%M %d/%m/%Y} (ICT).")]}]}]
     for index, section in enumerate(sections):
-        headers = ["Team", "XBrain / A", "TechX / B", "Target", "Latest reconcile", "Job status", "Last successful reconcile", "Open bridge PRs", "Freshness"]
+        headers = ["Team", "XBrain repository", "TechX repository", "Target branch", "Last sync", "Status", "PRs awaiting TechX review"]
         table = [{"type": "tableRow", "content": [cell(text(h), header=True) for h in headers]}]
         for i, row in enumerate(section["rows"]):
-            stamp = text(fmt_time(row["time"]), row["run_url"])
+            stamp = cell(text(fmt_time(row["time"])))
+            if row["run_url"]:
+                stamp["content"][0]["content"] += [text(" · "), text("run", row["run_url"])]
+            if row["label"] != "OK" or row["stale"]:
+                stamp["content"].append({"type":"paragraph", "content":[text("Last successful sync: " + fmt_time(row["last_success"]))]})
+            state = cell({"type": "status", "attrs": {"text": row["label"].upper(), "color": row["color"], "localId": f"s{index}-{i}"}})
+            if row["stale"]:
+                state["content"].append({"type":"paragraph", "content":[text("No successful sync in last 24h / scan")]})
+            branch = text(row["branch"])
+            branch["marks"] = [{"type":"code"}]
             table.append({"type": "tableRow", "content": [
-                cell(text(row["team"])), cell(text(row["source"], "https://github.com/" + row["source"])),
-                cell(text(row["target"], "https://github.com/" + row["target"])), cell(text(row["branch"])), cell(stamp),
-                cell({"type": "status", "attrs": {"text": row["label"], "color": row["color"], "localId": f"s{index}-{i}"}}),
-                cell(text(fmt_time(row["last_success"]))), cell(text(row["pending"])),
-                cell(text("No success in last 24h / scan" if row["stale"] else "Recent success"))]})
-        content += [{"type": "heading", "attrs": {"level": 2}, "content": [text(section["controller"])]},
-                    {"type": "paragraph", "content": [text(f"Scanned up to {section['scan_limit']} latest controller runs.")]},
-                    {"type": "table", "attrs": {"layout": "default"}, "content": table}]
+                cell(text(row["team"])), cell(text(row["source"].split("/")[1], "https://github.com/" + row["source"])),
+                cell(text(row["target"].split("/")[1], "https://github.com/" + row["target"])), cell(branch), stamp,
+                state, cell(text(row["pending"]))]})
+        content += [{"type": "heading", "attrs": {"level": 2}, "content": [text(section["controller"].split("/")[1], "https://github.com/" + section["controller"])]},
+                    {"type": "table", "attrs": {"layout": "wide"}, "content": table},
+                    {"type": "paragraph", "content": [text(f"Status shows the latest reconciliation job. OK does not mean every PR was accepted. PR count includes all open bridge PRs, including drafts. History covers up to {section['scan_limit']} controller runs.")]}]
     return {"type": "doc", "version": 1, "content": content}
 
 

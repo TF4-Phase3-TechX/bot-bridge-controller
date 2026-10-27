@@ -2,6 +2,7 @@ import { readFileSync, appendFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { notificationMetadata } from './pr-bridge-policy.mjs';
+import { validTargetBranch } from './target-branch.mjs';
 
 export function validateConfig(value) {
   const repo = /^[A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+$/;
@@ -15,7 +16,7 @@ export function validateConfig(value) {
   const ids = new Set(), repos = new Set([value.controllerRepo.toLowerCase()]);
   for (const pair of value.pairs) {
     if (!pair || !/^[a-z0-9][a-z0-9-]{0,62}$/.test(pair.id ?? '') || ids.has(pair.id)
-      || !repo.test(pair.source ?? '') || !repo.test(pair.target ?? '') || !['main', 'dev'].includes(pair.branch ?? 'main')) throw new Error('Invalid or duplicate pair');
+      || !repo.test(pair.source ?? '') || !repo.test(pair.target ?? '') || !validTargetBranch(pair.branch ?? 'main')) throw new Error('Invalid or duplicate pair');
     ids.add(pair.id);
     for (const name of [pair.source, pair.target]) {
       if (repos.has(name.toLowerCase())) throw new Error('A repository may belong to only one pair; controller must remain separate');

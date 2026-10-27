@@ -43,6 +43,32 @@ class Fixture:
             yield [pr("B/main-repo",branch="main")]
 
 class StatusTests(unittest.TestCase):
+    def test_custom_target_branches_are_queried_and_displayed(self):
+        from unittest.mock import patch
+        from status import valid_target_branch
+        for branch in ['init-demo', 'release/v1', 'develop']:
+            registry = {**REGISTRY, 'pairs': [{**REGISTRY['pairs'][0], 'branch': branch}]}
+            class Custom(Fixture):
+                def get(self, path):
+                    if 'bridge.config.json' in path:
+                        return {'content': base64.b64encode(json.dumps(registry).encode()).decode()}
+                    return super().get(path)
+                def pages(self, path, key=None):
+                    if '/pulls?' in path:
+                        self.paths.append(path)
+                        yield [pr('B/dev-repo', branch=branch), pr('B/dev-repo', branch='main')]
+                    else:
+                        yield from super().pages(path, key)
+            api = Custom()
+            data = collect(api, api, CTRL, now=NOW)
+            self.assertEqual(data['rows'][0]['branch'], branch)
+            self.assertEqual(data['rows'][0]['pending'], 1)
+            self.assertIn(branch, json.dumps(build_doc([data], NOW)))
+            from urllib.parse import urlencode
+            self.assertTrue(any(urlencode({'base':branch}) in path for path in api.paths))
+        for invalid in ['', '../x', 'x y', '-x', 'HEAD', 'x//y', 'x.lock', 'x@{y', None]:
+            self.assertFalse(valid_target_branch(invalid))
+
     def test_credentials_are_routed_by_repository_role(self):
         class Controller(Fixture):
             def pages(self, path, key=None):
@@ -135,7 +161,7 @@ class ConfluenceTests(unittest.TestCase):
                 result=({'id':'123','status':'current','title':'Updated title' if count==3 else 'Title','version':{'number':7 if count==3 else 4}}
                         if req.method=='GET' else {'id':'123','version':{'number':8}})
                 return io.BytesIO(json.dumps(result).encode())
-        op=Opener(); doc={'type':'doc','version':1,'content':[{'type':'paragraph','content':[{'type':'text','text':'Tiếng Việt <script>'}]}]}
+        op=Opener(); doc={'type':'doc','version':1,'content':[{'type':'paragraph','content':[{'type':'text','text':'Tiáº¿ng Viá»‡t <script>'}]}]}
         self.assertEqual(self.publisher(op).publish(doc),8)
         self.assertEqual([m for m,_ in op.calls],['GET','PUT','GET','PUT'])
         payload=op.calls[-1][1]

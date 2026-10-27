@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 const template = readFileSync(new URL('../templates/notifier/notify-controller.yml',import.meta.url),'utf8').replaceAll('\r\n','\n');
-for(const branch of ['main','dev']) {
+for(const branch of ['main','dev','init-demo','release/v1']) {
   const yaml = template.replaceAll('TARGET_BRANCH',branch);
   const expr = yaml.split('    if: >-\n')[1].split('    runs-on:')[0].trim();
   const node = yaml.split("node --input-type=module <<'NODE'\n")[1].split('          NODE')[0].split('\n').map(l=>l.slice(10)).join('\n').replace("import { appendFileSync } from 'node:fs';",'');

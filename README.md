@@ -1,6 +1,6 @@
 # Public contribution bridge lab controller
 
-Live controller for `Vihnnnn` (A) and `TF4-Phase3-TechX` (B). See `bridge.config.json` for both registered pairs. Each pair declares branch: dev or main (default main). Contributors open PRs only into that configured branch at A; B reviews and merges into the same branch at B. Notifiers automatically dispatch this controller. A six-hour scheduled sweep is a fallback.
+Live controller for `Vihnnnn` (A) and `TF4-Phase3-TechX` (B). See `bridge.config.json` for both registered pairs. Each pair declares one target branch (default main). Any valid Git branch name is supported, including init-demo and release/v1; each repository notifier filters events to that configured target. Contributors open PRs only into that configured branch at A; B reviews and merges into the same branch at B. Notifiers automatically dispatch this controller. A six-hour scheduled sweep is a fallback.
 
 ## Public lab repositories
 
@@ -13,7 +13,7 @@ Live controller for `Vihnnnn` (A) and `TF4-Phase3-TechX` (B). See `bridge.config
 
 Three Apps: Sync A has Contents, Pull requests and Workflows write on A repos; Transport B has the same permissions on B repos; Dispatch has Actions write only on the controller. Controller variables are `SOURCE_APP_CLIENT_ID`, `BRIDGE_APP_CLIENT_ID`, `BRIDGE_ENABLED`. Its secrets are `SOURCE_APP_PRIVATE_KEY`, `BRIDGE_APP_PRIVATE_KEY`. A/B product repos hold only `CONTROLLER_DISPATCH_APP_CLIENT_ID` and `CONTROLLER_DISPATCH_APP_PRIVATE_KEY` for dispatch.
 
-To reuse: change registry owners/repos/bot slugs and the workflow repository guard; replace the concrete lab A/B/controller names in the notifier. Create main and dev from B history, install the Apps on selected repos, configure secrets and branch protection, run tests, then enable `BRIDGE_ENABLED=true`. Run the controller on main without inputs to reconcile all registered pairs. Never store PEMs or tokens in source.
+To reuse: change registry owners/repos/bot slugs and the workflow repository guard; replace the concrete lab A/B/controller names in the notifier. Ensure the configured target exists at A and B from B history, install the Apps on selected repos, configure secrets and branch protection, run tests, then enable `BRIDGE_ENABLED=true`. Run the controller on main without inputs to reconcile all registered pairs. Never store PEMs or tokens in source.
 
 `allowPublicRepositories: true` explicitly permits these public lab endpoints. Private deployments should omit it or set false. Exact registered-repository and one-repo-per-token checks remain enforced. Public lab visibility is not proof of production branch-protection setup.
 

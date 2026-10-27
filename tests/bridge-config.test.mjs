@@ -58,11 +58,16 @@ test('public lab opt-in is explicit, typed and propagated to each pair', () => {
   }
 });
 
-test('target branch is explicit dev or default main; other targets rejected', () => {
+test('target branch is configured per pair without a main/dev whitelist', () => {
   const r = registry();
   assert.equal(pairConfig(r, 'pair-1').branch, 'main');
-  r.pairs[0].branch = 'dev';
-  assert.equal(pairConfig(r, 'pair-1').branch, 'dev');
-  r.pairs[0].branch = 'feature/invalid';
-  assert.throws(() => validateConfig(r));
+  for (const branch of ['dev', 'init-demo', 'release/v1', 'develop']) {
+    r.pairs[0].branch = branch;
+    assert.equal(pairConfig(r, 'pair-1').branch, branch);
+    assert.equal(planPairs(r, event('A/repo-1')).include[0].id, 'pair-1');
+  }
+  for (const branch of ['', '../x', 'x y', '-x', 'HEAD', 'x//y', 'x.lock', 'x@{y']) {
+    r.pairs[0].branch = branch;
+    assert.throws(() => validateConfig(r));
+  }
 });

@@ -96,7 +96,7 @@ def parse_time(value):
 
 def fmt_time(value):
     date = parse_time(value)
-    return date.astimezone(ICT).strftime("%H:%M %d/%m/%Y") if date else "—"
+    return date.astimezone(ICT).strftime("%H:%M %d/%m/%Y") if date else "â€”"
 
 
 def transport_scope(registry, controller):
@@ -110,6 +110,16 @@ def transport_scope(registry, controller):
     if len(owners) != 1:
         raise ValueError("Status workflow requires one Transport installation owner")
     return {"owner": next(iter(owners)), "repositories": ",".join(sorted(t.split("/")[1] for t in targets))}
+
+
+
+def valid_target_branch(branch):
+    return (isinstance(branch, str) and bool(branch) and branch != "HEAD"
+            and not branch.startswith("-")
+            and not re.search(r"[\x00-\x20\x7f~^:?*\[\\]", branch)
+            and ".." not in branch and "@{" not in branch and not branch.endswith(".")
+            and all(part and not part.startswith(".") and not part.endswith(".lock")
+                    for part in branch.split("/")))
 
 
 def collect(api, target_api, controller, max_runs=200, now=None):
@@ -128,8 +138,8 @@ def collect(api, target_api, controller, max_runs=200, now=None):
         if not all(REPO.fullmatch(p[k]) for k in ("source", "target")):
             raise ValueError("Invalid pair endpoint")
         # Matches production registry semantics, not repository default_branch.
-        if p.get("branch", "main") not in ("main", "dev"):
-            raise ValueError("Contribution branch must be main or dev")
+        if not valid_target_branch(p.get("branch", "main")):
+            raise ValueError("Invalid contribution target branch")
     jobs, successes = latest_jobs(api, controller, {p["id"] for p in pairs}, max_runs)
     rows = []
     for p in pairs:
@@ -172,7 +182,7 @@ def build_doc(sections, now=None):
         for i, row in enumerate(section["rows"]):
             stamp = cell(text(fmt_time(row["time"])))
             if row["run_url"]:
-                stamp["content"][0]["content"] += [text(" · "), text("run", row["run_url"])]
+                stamp["content"][0]["content"] += [text(" Â· "), text("run", row["run_url"])]
             if row["label"] != "OK" or row["stale"]:
                 stamp["content"].append({"type":"paragraph", "content":[text("Last successful sync: " + fmt_time(row["last_success"]))]})
             state = cell({"type": "status", "attrs": {"text": row["label"].upper(), "color": row["color"], "localId": f"s{index}-{i}"}})

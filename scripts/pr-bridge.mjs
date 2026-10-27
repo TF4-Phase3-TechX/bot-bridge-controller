@@ -7,13 +7,14 @@ import { textBlock, reviewSummary } from './pr-bridge-reviews.mjs';
 import { syncContent } from './pr-content.mjs';
 import { loadConfig, pairConfig } from './bridge-config.mjs';
 import { syncBranches } from './branch-sync.mjs';
+import { validTargetBranch } from './target-branch.mjs';
 
 export async function runBridge({
   config,
   env = process.env, fetchImpl = fetch, spawnImpl = spawnSync, now = Date.now(),
 } = {}) {
 const { source, target, bot, sourceBot, controllerRepo, branch: pairBranch = 'main' } = config;
-if (!['main', 'dev'].includes(pairBranch)) throw new Error('Contribution branch must be main or dev');
+if (!validTargetBranch(pairBranch)) throw new Error('Invalid contribution target branch');
 const sourceToken = env.SOURCE_TOKEN;
 const targetToken = env.BRIDGE_APP_TOKEN;
 const report = { source, target, controller: controllerRepo, pairs: [], run: `https://github.com/${controllerRepo}/actions/runs/${env.GITHUB_RUN_ID}` };
@@ -267,7 +268,7 @@ finally {
     ...((report.branches ?? []).map(b => `- ${encodeURIComponent(b.branch ?? '(snapshot)')}: **${b.state}**${b.recovery ? `; recovery: ${encodeURIComponent(b.recovery)}` : ''}`)),
     '', 'Open A PR heads are deferred; A-only branches are retained. No branch deletions or reverse mirroring.', '',
     '| A PR | B PR | State | Source head |', '|---|---|---|---|',
-    ...report.pairs.map(p => `| [#${p.a}](https://github.com/${source}/pull/${p.a}) | ${p.b ? `[#${p.b}](https://github.com/${target}/pull/${p.b})` : '—'} | ${p.state} | \`${p.sourceHead ?? ''}\` |`),
+    ...report.pairs.map(p => `| [#${p.a}](https://github.com/${source}/pull/${p.a}) | ${p.b ? `[#${p.b}](https://github.com/${target}/pull/${p.b})` : 'â€”'} | ${p.state} | \`${p.sourceHead ?? ''}\` |`),
     report.error ? `\nStopped: ${report.error}` : '', ''].join('\n');
   if (env.GITHUB_STEP_SUMMARY) appendFileSync(env.GITHUB_STEP_SUMMARY, summary);
 }

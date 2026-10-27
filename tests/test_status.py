@@ -120,6 +120,37 @@ class ConfluenceTests(unittest.TestCase):
         op=Opener()
         with self.assertRaisesRegex(RuntimeError,'after retry'):self.publisher(op).publish({'type':'doc','version':1,'content':[]})
         self.assertEqual(op.puts,2)
+    def test_local_http_server_contract(self):
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        from threading import Thread
+        from urllib.request import Request, build_opener
+        calls=[]
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self,*args): pass
+            def respond(self,status,payload):
+                data=json.dumps(payload).encode()
+                self.send_response(status); self.send_header('Content-Type','application/json'); self.end_headers(); self.wfile.write(data)
+            def do_GET(self):
+                calls.append(('GET',None))
+                self.respond(200,{'id':'123','title':'HTTP lab','status':'current','version':{'number':11 if len(calls)==1 else 12}})
+            def do_PUT(self):
+                payload=json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                calls.append(('PUT',payload))
+                self.respond(409 if len(calls)==2 else 200, {} if len(calls)==2 else {'id':'123','version':{'number':13}})
+        server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
+        thread=Thread(target=server.serve_forever,daemon=True); thread.start()
+        class LocalOpener:
+            def open(self,req,timeout):
+                redirected=Request(f'http://127.0.0.1:{server.server_port}/wiki/api/v2/pages/123',data=req.data,headers=req.headers,method=req.method)
+                return build_opener().open(redirected,timeout=timeout)
+        try:
+            doc={'type':'doc','version':1,'content':[]}
+            self.assertEqual(self.publisher(LocalOpener()).publish(doc),13)
+            self.assertEqual([c[0] for c in calls],['GET','PUT','GET','PUT'])
+            self.assertEqual(json.loads(calls[-1][1]['body']['value']),doc)
+        finally:
+            server.shutdown(); server.server_close(); thread.join()
+
     def test_invalid_config_fails_before_network(self):
         with self.assertRaises(ValueError): Publisher('evil.example','123','x','x')
         with self.assertRaises(ValueError): Publisher('11111111-1111-1111-1111-111111111111','../x','x','x')

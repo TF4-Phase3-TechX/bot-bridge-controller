@@ -26,7 +26,7 @@ class NoRedirect(HTTPRedirectHandler):
 class GitHub:
     def __init__(self, token, opener=None, sleep=time.sleep):
         if not token:
-            raise ValueError("Missing GH_TOKEN")
+            raise ValueError("Missing GitHub token")
         self.opener = opener or build_opener(NoRedirect())
         self.token, self.sleep = token, sleep
 
@@ -99,7 +99,20 @@ def fmt_time(value):
     return date.astimezone(ICT).strftime("%H:%M %d/%m/%Y") if date else "—"
 
 
-def collect(api, controller, max_runs=200, public_lab=False, now=None):
+def transport_scope(registry, controller):
+    """Select only registered B repositories for a reduced Transport token."""
+    if not REPO.fullmatch(controller) or registry.get("controllerRepo") != controller or not registry.get("pairs"):
+        raise ValueError("Controller registry mismatch or empty registry")
+    targets = {p["target"] for p in registry["pairs"]}
+    if any(not REPO.fullmatch(t) or t.lower() == controller.lower() for t in targets):
+        raise ValueError("Invalid target repository or controller used as a target")
+    owners = {t.split("/")[0] for t in targets}
+    if len(owners) != 1:
+        raise ValueError("Status workflow requires one Transport installation owner")
+    return {"owner": next(iter(owners)), "repositories": ",".join(sorted(t.split("/")[1] for t in targets))}
+
+
+def collect(api, target_api, controller, max_runs=200, now=None):
     if not REPO.fullmatch(controller):
         raise ValueError("Invalid controller repository")
     now = now or datetime.now(timezone.utc)
@@ -117,8 +130,6 @@ def collect(api, controller, max_runs=200, public_lab=False, now=None):
         # Matches production registry semantics, not repository default_branch.
         if p.get("branch", "main") not in ("main", "dev"):
             raise ValueError("Contribution branch must be main or dev")
-        if public_lab and api.get(f"/repos/{p['target']}")["private"]:
-            raise ValueError("Public lab fallback cannot read a private target; configure Status App")
     jobs, successes = latest_jobs(api, controller, {p["id"] for p in pairs}, max_runs)
     rows = []
     for p in pairs:
@@ -127,7 +138,7 @@ def collect(api, controller, max_runs=200, public_lab=False, now=None):
         label, color = STATUS.get(state, ("Not found in scan", "neutral"))
         pending = 0
         query = urlencode({"state": "open", "base": branch})
-        for prs in api.pages(f"/repos/{p['target']}/pulls?{query}"):
+        for prs in target_api.pages(f"/repos/{p['target']}/pulls?{query}"):
             pending += sum(1 for pr in prs if pr["base"]["ref"] == branch
                            and pr.get("user", {}).get("login") == bot
                            and pr["head"].get("repo", {}).get("full_name") == p["target"]
@@ -176,12 +187,14 @@ def main():
     parser.add_argument("--out", required=True)
     parser.add_argument("--snapshot", default="snapshot.json")
     parser.add_argument("--max-runs", type=int, default=200)
-    parser.add_argument("--public-lab", action="store_true")
     args = parser.parse_args()
     if not 1 <= args.max_runs <= 1000:
         parser.error("max-runs must be between 1 and 1000")
-    api = GitHub(os.environ.get("GH_TOKEN"))
-    sections = [collect(api, c, args.max_runs, args.public_lab) for c in args.controller]
+    if not os.environ.get("GH_TOKEN") or not os.environ.get("TRANSPORT_READ_TOKEN"):
+        raise ValueError("Both GH_TOKEN and TRANSPORT_READ_TOKEN are required; no token fallback")
+    api = GitHub(os.environ["GH_TOKEN"])
+    target_api = GitHub(os.environ["TRANSPORT_READ_TOKEN"])
+    sections = [collect(api, target_api, c, args.max_runs) for c in args.controller]
     for filename, data in [(args.out, build_doc(sections)), (args.snapshot, sections)]:
         with open(filename, "w", encoding="utf-8") as output:
             json.dump(data, output, ensure_ascii=False, indent=2)

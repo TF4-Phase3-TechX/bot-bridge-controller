@@ -4,7 +4,7 @@ import json
 import unittest
 from datetime import datetime, timezone
 from urllib.error import HTTPError
-from status import GitHub, collect, build_doc
+from status import GitHub, collect, build_doc, transport_scope
 from publish import Publisher
 
 CTRL = "B/controller"
@@ -43,8 +43,41 @@ class Fixture:
             yield [pr("B/main-repo",branch="main")]
 
 class StatusTests(unittest.TestCase):
+    def test_credentials_are_routed_by_repository_role(self):
+        class Controller(Fixture):
+            def pages(self, path, key=None):
+                if "/pulls?" in path: raise AssertionError("Controller token used for B PRs")
+                yield from super().pages(path, key)
+        class Target(Fixture):
+            def get(self, path): raise AssertionError("Transport token used for controller contents")
+            def pages(self, path, key=None):
+                if "/pulls?" not in path: raise AssertionError("Transport token used for Actions")
+                yield from super().pages(path, key)
+        controller, target = Controller(), Target()
+        data = collect(controller, target, CTRL, now=NOW)
+        self.assertEqual([row['pending'] for row in data['rows']], [101, 1])
+        self.assertTrue(all(path.startswith('/repos/B/controller/') for path in controller.paths))
+        self.assertTrue(all('/pulls?' in path for path in target.paths))
+
+    def test_transport_scope_is_only_registered_targets(self):
+        self.assertEqual(transport_scope(REGISTRY, CTRL),
+                         {'owner':'B', 'repositories':'dev-repo,main-repo'})
+        for targets in [['B/controller'], ['B/dev-repo','Other/main-repo'], ['B/bad\nname']]:
+            registry = {**REGISTRY, 'pairs':[{'target':t} for t in targets]}
+            with self.assertRaises(ValueError): transport_scope(registry, CTRL)
+
+    def test_missing_transport_token_fails_before_network(self):
+        import os
+        from unittest.mock import patch
+        from status import main
+        with patch.dict(os.environ, {'GH_TOKEN':'controller-only'}, clear=True), \
+             patch('sys.argv', ['status.py','--controller',CTRL,'--out','unused.json']), \
+             patch('status.GitHub.get') as read:
+            with self.assertRaisesRegex(ValueError, 'TRANSPORT_READ_TOKEN'): main()
+            read.assert_not_called()
+
     def test_registry_targets_identity_pagination_and_last_success(self):
-        api=Fixture(); data=collect(api,CTRL,now=NOW)
+        api=Fixture(); data=collect(api,api,CTRL,now=NOW)
         a,b=data["rows"]
         self.assertEqual([a["branch"],b["branch"]],["dev","main"])
         self.assertEqual([a["pending"],b["pending"]],[101,1])
@@ -56,14 +89,14 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(adf["type"],"doc")
         self.assertIn("Last successful reconcile",json.dumps(adf))
     def test_incomplete_reads_fail_instead_of_reporting_zero(self):
-        with self.assertRaisesRegex(RuntimeError,"403"): collect(Fixture(True),CTRL,now=NOW)
+        with self.assertRaisesRegex(RuntimeError,"403"): collect(Fixture(),Fixture(True),CTRL,now=NOW)
     def test_missing_history_is_not_green(self):
         api=Fixture(); old=api.pages
         def pages(path,key=None):
             if path.endswith('/runs'): yield []
             else: yield from old(path,key)
         api.pages=pages
-        data=collect(api,CTRL,now=NOW)
+        data=collect(api,api,CTRL,now=NOW)
         self.assertTrue(all(r['label']=='Not found in scan' and r['stale'] for r in data['rows']))
     def test_get_retries_503_without_leaking_response(self):
         class Opener:

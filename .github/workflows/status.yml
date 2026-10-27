@@ -10,7 +10,6 @@ on:
 permissions:
   contents: read
   actions: read
-  pull-requests: read
 
 concurrency:
   group: contribution-sync-status
@@ -30,35 +29,34 @@ jobs:
           python-version: '3.12'
       - name: Test status collector and publisher contract
         run: python -m unittest discover -s tests -p 'test_*.py' -v
-      - name: Validate GitHub authentication mode
-        env:
-          STATUS_APP_CLIENT_ID: ${{ vars.STATUS_APP_CLIENT_ID }}
-          STATUS_PUBLIC_LAB: ${{ vars.STATUS_PUBLIC_LAB }}
+      - name: Select registered B repositories for the Transport token
+        id: targets
         run: |
-          if [ -z "$STATUS_APP_CLIENT_ID" ] && [ "$STATUS_PUBLIC_LAB" != "true" ]; then
-            echo 'Private deployments require the read-only Status App; public fallback is lab-only.'
-            exit 1
-          fi
-      - name: Read-only token for controller and registered B repositories
-        id: status-app
-        if: vars.STATUS_APP_CLIENT_ID != ''
+          python - <<'PY'
+          import json, os
+          from status import transport_scope
+          with open('bridge.config.json', encoding='utf-8') as handle:
+              scope = transport_scope(json.load(handle), os.environ['GITHUB_REPOSITORY'])
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              for key, value in scope.items():
+                  output.write(f'{key}={value}\n')
+          PY
+      - name: Read-only Transport token for registered B repositories
+        id: transport-read
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510
         with:
-          client-id: ${{ vars.STATUS_APP_CLIENT_ID }}
-          private-key: ${{ secrets.STATUS_APP_PRIVATE_KEY }}
-          owner: ${{ github.repository_owner }}
-          permission-actions: read
+          client-id: ${{ vars.BRIDGE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.BRIDGE_APP_PRIVATE_KEY }}
+          owner: ${{ steps.targets.outputs.owner }}
+          repositories: ${{ steps.targets.outputs.repositories }}
           permission-contents: read
           permission-pull-requests: read
       - name: Collect complete GitHub snapshot and render ADF
         env:
-          GH_TOKEN: ${{ steps.status-app.outputs.token || github.token }}
+          GH_TOKEN: ${{ github.token }}
+          TRANSPORT_READ_TOKEN: ${{ steps.transport-read.outputs.token }}
           CONTROLLER_REPO: ${{ github.repository }}
-          STATUS_APP_CLIENT_ID: ${{ vars.STATUS_APP_CLIENT_ID }}
-        run: |
-          args=()
-          if [ -z "$STATUS_APP_CLIENT_ID" ]; then args+=(--public-lab); fi
-          python status.py --controller "$CONTROLLER_REPO" --out status.json --snapshot snapshot.json "${args[@]}"
+        run: python status.py --controller "$CONTROLLER_REPO" --out status.json --snapshot snapshot.json
       - name: Keep generated output for inspection
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

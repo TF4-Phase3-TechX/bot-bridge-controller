@@ -3,15 +3,12 @@ import assert from 'node:assert/strict';
 import { contentParts, snapshotObjects, syncContent, readThreads } from '../scripts/pr-content.mjs';
 
 const pr = { number: 1, body: 'Nội dung gốc', user: { login: 'author' }, base: { ref: 'main' }, head: { sha: 'a'.repeat(40) } };
-test('long Unicode and hostile fences are reversible without truncation or activated Markdown', () => {
-  const value = '🙂 Tiếng Việt\n' + '`'.repeat(47000) + '\n```suggestion\ncode\n```\n@all';
-  const parts = contentParts('A/repo', 1, 'body', 1, {}, value);
-  const recovered = parts.map(p => {
-    const block = p.body.slice(p.body.indexOf('\n\n') + 2);
-    const first = block.indexOf('\n'), fenceLength = block.slice(0, first).length - 4;
-    return block.slice(first + 1, -(fenceLength + 1));
-  }).join('');
-  assert.equal(recovered, '{}\n\n' + value);
+test('Markdown remains outside wrappers and long Unicode content is retained in parts', () => {
+  const value = '# Heading\n\n| A | B |\n|---|---|\n| one | two |\n\n```js\nconsole.log(1)\n```\n' + '🙂'.repeat(16000);
+  const parts = contentParts('A/repo', 1, 'comment', 1, { author: 'alice' }, value);
+  const recovered = parts.map(p => p.body.slice(p.marker.length + 1, p.body.lastIndexOf('\n\n---\nCopied from'))).join('');
+  assert.equal(recovered, value);
+  assert.ok(parts[0].body.startsWith(parts[0].marker + '\n# Heading'));
   assert.ok(parts.every(p => p.body.length <= 60000));
 });
 test('published reviews and replies retain provenance; pending feedback and bridge echoes are excluded', () => {
@@ -36,11 +33,16 @@ test('thread reader paginates threads and nested comments and preserves resoluti
 });
 function fixture() {
   const all = { A: [], B: [] }; let id = 10, writes = 0, fail = false;
-  const a = structuredClone(pr), b = { ...structuredClone(pr), number: 2, body: 'B independent notes' };
+  const a = structuredClone(pr), b = { ...structuredClone(pr), number: 2, body: 'B independent notes', user: {login: 'b-bot'}, head: {ref: 'incoming/a-pr-1', repo: {full_name: 'B'}} };
   const args = { source: 'A', target: 'B', a, b, sourceBot: 'a-bot', bot: 'b-bot',
     list: async (repo, path) => structuredClone(path.startsWith('/issues/') ? all[repo] : []),
     graphql: async () => { if (fail) throw new Error('Snapshot failed'); return { repository: { pullRequest: { reviewThreads: { nodes: [], pageInfo: { hasNextPage: false } } } } }; },
     api: async (repo, path, opts = {}) => {
+      if (path.startsWith('/pulls/')) {
+        const p = repo === 'A' ? a : b;
+        if (opts.method === 'PATCH') { writes++; p.body = opts.body.body; }
+        return structuredClone(p);
+      }
       if (!opts.method) return structuredClone(all[repo].find(c => path.endsWith('/' + c.id)));
       writes++;
       let c = opts.method === 'PATCH' ? all[repo].find(c => path.endsWith('/' + c.id)) : null;
@@ -50,21 +52,28 @@ function fixture() {
   };
   return { all, args, writes: () => writes, fail: () => fail = true };
 }
-test('both bodies update without overwriting originals or echoing; rerun is idempotent', async () => {
+test('A body updates B directly while B notes survive; rerun is idempotent with no echo', async () => {
   const f = fixture(); await syncContent(f.args); const before = f.writes();
   await syncContent(f.args); assert.equal(f.writes(), before);
-  f.args.a.body = 'edited A'; await syncContent(f.args);
-  assert.equal(f.args.b.body, 'B independent notes');
-  assert.ok(f.all.B[0].body.includes('edited A'));
+  f.args.a.body = '# Edited A\n\n- [x] checked'; await syncContent(f.args);
+  assert.ok(f.args.b.body.startsWith(f.args.a.body + '\n\n'));
+  assert.ok(f.args.b.body.includes('B independent notes'));
+  assert.ok(f.all.A[0].body.includes('B independent notes'));
   assert.equal(f.writes(), before + 1);
+  assert.equal(f.all.B.length, 0);
 });
-test('deleted source comment and shortened long body tombstone obsolete copies', async () => {
-  const f = fixture(); f.args.a.body = 'x'.repeat(40000); f.all.A.push({ id: 1, user: { login: 'human' }, body: 'delete me' });
+test('comment edits and deletion append history once without changing older copies', async () => {
+  const f = fixture(); f.all.A.push({ id: 1, user: { login: 'human' }, body: '# First' });
   await syncContent(f.args);
-  f.all.A = f.all.A.filter(c => c.id !== 1); f.args.a.body = '';
-  await syncContent(f.args);
-  const obsolete = f.all.B.filter(c => c.body.includes('no longer published'));
-  assert.equal(obsolete.length, 3);
+  const original = structuredClone(f.all.B[0]);
+  f.all.A[0].body = '# Second'; await syncContent(f.args);
+  assert.equal(f.all.B.length, 2);
+  assert.deepEqual(f.all.B[0], original);
+  assert.ok(f.all.B[1].body.includes('# Second'));
+  f.all.A = f.all.A.filter(c => c.id !== 1); await syncContent(f.args);
+  assert.equal(f.all.B.length, 3);
+  assert.ok(f.all.B[2].body.includes('no longer published'));
+  const before = f.writes(); await syncContent(f.args); assert.equal(f.writes(), before);
 });
 test('incomplete API snapshots cause no write or deletion', async () => {
   const f = fixture(); await syncContent(f.args); const before = f.writes(); f.fail();

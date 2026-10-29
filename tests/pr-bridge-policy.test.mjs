@@ -20,7 +20,7 @@ test('newer or force-rewritten A revision is not silently closed after B squash 
 });
 test('missing merge result in dev defers acceptance even if source revision matches', () => {
   for (const headIncluded of [true, false]) {
-    assert.equal(pairDecision({ merged: true, headIncluded, sourceHead: 'a'.repeat(40), mergedHead: 'a'.repeat(40), mergeResultIncluded: false }), 'merge-result-not-in-dev');
+    assert.equal(pairDecision({ merged: true, headIncluded, sourceHead: 'a'.repeat(40), mergedHead: 'a'.repeat(40), mergeResultIncluded: false }), 'merge-result-not-in-branch');
   }
 });
 test('missing or malformed revision is never accepted merely by equality', () => {

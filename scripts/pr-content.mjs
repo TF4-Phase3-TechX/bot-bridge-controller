@@ -1,18 +1,28 @@
 import { createHash } from 'node:crypto';
 import { textBlock } from './pr-bridge-reviews.mjs';
+import { syncDescription } from './pr-description.mjs';
 
 export const digest = value => createHash('sha256').update(value).digest('hex');
 const prefix = (repo, pr) => `<!-- bridge-content:${repo}#${pr}:`;
 const choose = (obj, keys) => Object.fromEntries(keys.filter(k => obj[k] !== undefined).map(k => [k, obj[k]]));
 
-// Render all content literally. Chunk before fencing, including pathological backticks.
+// Keep ordinary GitHub Markdown; provenance and structured metadata live below it.
 export function contentParts(repo, pr, kind, id, metadata, text) {
-  const payload = JSON.stringify(metadata, null, 2) + '\n\n' + String(text ?? '');
-  const points = Array.from(payload), parts = [];
-  for (let offset = 0; offset < points.length; offset += 15000) parts.push(points.slice(offset, offset + 15000).join(''));
-  return parts.map((part, i) => {
+  const chunk = (value, limit) => {
+    const parts = []; let part = '';
+    for (const point of value) {
+      if (part.length + point.length > limit) { parts.push(part); part = ''; }
+      part += point;
+    }
+    if (part) parts.push(part);
+    return parts;
+  };
+  const texts = chunk(String(text ?? ''), 45000), details = chunk(JSON.stringify(metadata, null, 2), 9000);
+  const count = Math.max(1, texts.length, details.length);
+  return Array.from({ length: count }, (_, i) => {
     const marker = `${prefix(repo, pr)}${kind}:${id}:${i + 1} -->`;
-    const body = `${marker}\nSource: ${repo} PR #${pr} / ${kind} ${id}\nPart ${i + 1}/${parts.length} · SHA256 ${digest(payload)}\n\n${textBlock(part)}`;
+    const url = metadata.html_url || metadata.url || `https://github.com/${repo}/pull/${pr}`;
+    const body = `${marker}\n${texts[i] ?? ''}\n\n---\nCopied from [${repo}#${pr} · ${kind} ${id}](${url}). Author: **${metadata.author ?? 'not supplied'}**.${metadata.state ? ` State: **${metadata.state}**.` : ''}\n\n<details>\n<summary>Sync details · part ${i + 1}/${count}</summary>\n\n${textBlock(details[i] ?? '')}\n\n</details>`;
     if (body.length > 60000) throw new Error('Mirror part exceeds safe limit');
     return { marker, body };
   });
@@ -81,25 +91,32 @@ export async function syncContent({ source, target, a, b, sourceBot, bot, api, l
     const threads = await readThreads(graphql, repo, pr.number);
     snapshots.push({ repo, pr, comments, reviews, objects: snapshotObjects(pr, comments, reviews, inline, threads, originBot) });
   }
+  const notes = await syncDescription({ source, target, a, b, bot, api });
+  // A's description now lives directly in B's PR body. Only B's own notes go back
+  // as a comment, so the generated description and footer cannot echo to A.
+  snapshots[0].objects = snapshots[0].objects.filter(o => o.kind !== 'body');
+  snapshots[1].objects = snapshots[1].objects.filter(o => o.kind !== 'body');
+  if (notes.replace(/<!--[^]*?-->/g, '').replace('### TechX maintainer notes', '').trim()) {
+    snapshots[1].objects.push({ kind: 'body', id: b.number, metadata: { url: b.html_url, section: 'TechX maintainer notes' }, text: notes });
+  }
   for (const [from, to, destinationBot] of [[snapshots[0], snapshots[1], bot], [snapshots[1], snapshots[0], sourceBot]]) {
     const wanted = from.objects.flatMap(o => contentParts(from.repo, from.pr.number, o.kind, o.id, o.metadata, o.text));
     const existing = to.comments.filter(c => c.user?.login === destinationBot && c.body?.startsWith(prefix(from.repo, from.pr.number)));
     const expected = new Set(wanted.map(p => p.marker));
     for (const old of existing) {
       const marker = old.body.split('\n')[0];
-      if (!expected.has(marker)) wanted.push({ marker, body: `${marker}\nSource object is no longer published, or this part has been superseded. Reconciled from a complete source snapshot.` });
+      if (!expected.has(marker) && !wanted.some(p => p.marker === marker)) wanted.push({ marker, body: `${marker}\nSource object is no longer published, or this part has been superseded. Reconciled from a complete source snapshot.` });
     }
     for (const part of wanted) {
       const matches = existing.filter(c => c.body.split('\n')[0] === part.marker);
-      if (matches.length > 1) throw new Error('Duplicate content mapping; inspect before retry');
-      const old = matches[0];
+      const old = matches.sort((x, y) => y.id - x.id)[0];
       if (old?.body === part.body) continue;
       if (old) {
         const fresh = await api(to.repo, `/issues/comments/${old.id}`);
         if (fresh.body !== old.body || fresh.user?.login !== destinationBot) throw new Error('Mirror changed concurrently; retry');
       }
-      const saved = await api(to.repo, old ? `/issues/comments/${old.id}` : `/issues/${to.pr.number}/comments`, {
-        method: old ? 'PATCH' : 'POST', body: { body: part.body },
+      const saved = await api(to.repo, `/issues/${to.pr.number}/comments`, {
+        method: 'POST', body: { body: part.body },
       });
       const verified = await api(to.repo, `/issues/comments/${saved.id}`);
       if (verified.body !== part.body || verified.user?.login !== destinationBot) throw new Error('Content read-back mismatch');

@@ -112,6 +112,7 @@ jobs:
           BRIDGE_PAIR_ID: ${{ matrix.id }}
           SOURCE_TOKEN: ${{ steps.source.outputs.token }}
           BRIDGE_APP_TOKEN: ${{ steps.target.outputs.token }}
+          TRANSPORT_WORKFLOWS_WRITE: 'true'
           TRIGGER_SOURCE_REPO: ${{ inputs.source_repo }}
           TRIGGER_SOURCE_SHA: ${{ inputs.source_sha }}
           TRIGGER_SOURCE_RUN_ID: ${{ inputs.source_run_id }}

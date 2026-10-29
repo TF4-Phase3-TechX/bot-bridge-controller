@@ -3,13 +3,13 @@ export function mainSyncDecision({ equal, aIsAncestor }) {
   return aIsAncestor ? 'fast-forward' : 'replace-from-b';
 }
 
-export function mainSyncPush({ source, target, repo, before, accepted, replace }) {
+export function mainSyncPush({ source, target, repo, before, accepted, replace, branch = 'main' }) {
   if (repo !== source || source === target || ![before, accepted].every(s => /^[a-f0-9]{40}$/.test(s))) {
     throw new Error('Invalid authoritative main sync');
   }
-  const recovery = replace ? `refs/heads/recovery/a-main-${before}` : null;
-  const options = ['--atomic', `--force-with-lease=refs/heads/main:${before}`];
-  const refs = [`${accepted}:refs/heads/main`];
+  const recovery = replace ? `refs/heads/recovery/a-${branch}-${before}` : null;
+  const options = ['--atomic', `--force-with-lease=refs/heads/${branch}:${before}`];
+  const refs = [`${accepted}:refs/heads/${branch}`];
   if (recovery) {
     options.push(`--force-with-lease=${recovery}:`);
     refs.unshift(`${before}:${recovery}`);
@@ -34,8 +34,8 @@ export function notificationMetadata({ source, target, repo, sha, runId, event, 
 
 export function pairDecision({ merged, closed, sourceClosed, headIncluded, mergeResultIncluded, sourceHead, mergedHead, sourceIncludedInBHead }) {
   if (merged) {
-    if (!mergeResultIncluded) return 'merge-result-not-in-dev';
-    // Identity requires the original commits in dev, not just equivalent changes.
+    if (!mergeResultIncluded) return 'merge-result-not-in-branch';
+    // Identity requires the original commits in main, not just equivalent changes.
     const exactRevision = /^[a-f0-9]{40}$/.test(sourceHead ?? '') && sourceHead === mergedHead;
     if (headIncluded) return 'accepted';
     return exactRevision || sourceIncludedInBHead ? 'identity-not-preserved' : 'new-commits-pending';
@@ -52,6 +52,9 @@ export function assertMutation({ repo, source, target, path, method, body, branc
     && body.base === branch && /^incoming\/a-pr-[1-9][0-9]*$/.test(body.head);
   const editPR = repo === source && method === 'PATCH' && /^\/pulls\/[1-9][0-9]*$/.test(path)
     && Object.keys(body).length === 1 && body.state === 'closed';
+  const editDescription = repo === target && method === 'PATCH' && /^\/pulls\/[1-9][0-9]*$/.test(path)
+    && Object.keys(body).length === 1 && typeof body.body === 'string'
+    && body.body.includes(`\n\n<!-- b-authoritative-bridge:${source}#`);
   const comment = ((method === 'POST' && /^\/issues\/[1-9][0-9]*\/comments$/.test(path))
     || (method === 'PATCH' && /^\/issues\/comments\/[1-9][0-9]*$/.test(path)))
     && Object.keys(body).every(key => key === 'body')
@@ -59,12 +62,12 @@ export function assertMutation({ repo, source, target, path, method, body, branc
       body.body.startsWith(`<!-- bridge-content:${source}#`)
       || body.body.startsWith(`<!-- bridge-conversation:${source}#`)
       || body.body.startsWith(`<!-- bridge-source-status:${source}#`))));
-  if (!createPR && !editPR && !comment) throw new Error('Mutation outside bridge policy');
+  if (!createPR && !editPR && !editDescription && !comment) throw new Error('Mutation outside bridge policy');
 }
 
-export function assertPush({ repo, source, target, ref }) {
-  if (repo === source && ref === 'refs/heads/main') return;
-  if (repo === source && /^refs\/heads\/recovery\/a-main-[a-f0-9]{40}$/.test(ref)) return;
+export function assertPush({ repo, source, target, ref, branch = 'main' }) {
+  if (repo === source && ref === `refs/heads/${branch}`) return;
+  if (repo === source && ref.startsWith(`refs/heads/recovery/a-${branch}-`) && /^[a-f0-9]{40}$/.test(ref.slice(`refs/heads/recovery/a-${branch}-`.length))) return;
   if (repo === target && /^refs\/heads\/incoming\/a-pr-[1-9][0-9]*$/.test(ref)) return;
   throw new Error('Push outside bridge policy');
 }

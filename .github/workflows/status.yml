@@ -12,10 +12,6 @@ permissions:
   contents: read
   actions: read
 
-concurrency:
-  group: contribution-sync-status
-  cancel-in-progress: false
-
 jobs:
   status:
     if: >-
@@ -24,6 +20,9 @@ jobs:
         (github.event.workflow_run.head_repository.full_name == github.repository &&
          github.event.workflow_run.head_branch == 'main' &&
          (github.event.workflow_run.event == 'workflow_dispatch' || github.event.workflow_run.event == 'schedule')))
+    concurrency:
+      group: contribution-sync-status
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -86,7 +85,7 @@ jobs:
           CONFLUENCE_PAGE_ID: ${{ vars.CONFLUENCE_PAGE_ID }}
         run: python publish.py status.json --snapshot-time-file snapshot-at.txt
       - name: Report collection-only mode explicitly
-        if: vars.CONFLUENCE_PUBLISH_ENABLED != 'true' || github.event_name == 'push'
+        if: vars.CONFLUENCE_PUBLISH_ENABLED != 'true'
         run: echo 'GitHub snapshot generated. Confluence publication was skipped; this run is not proof of a live page update.' >> "$GITHUB_STEP_SUMMARY"
       - name: Remove temporary dashboard files
         if: always()

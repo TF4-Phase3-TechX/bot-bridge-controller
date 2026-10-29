@@ -1,11 +1,12 @@
 name: Contribution sync status
 on:
   workflow_dispatch:
+  workflow_run:
+    workflows: ['Contribution bridge controller']
+    types: [completed]
+    branches: [main]
   schedule:
     - cron: '17 1-11 * * 1-5'
-  push:
-    branches: [main]
-    paths: [status.py, publish.py, tests/test_status.py, .github/workflows/status.yml]
 
 permissions:
   contents: read
@@ -17,19 +18,36 @@ concurrency:
 
 jobs:
   status:
-    if: github.ref == 'refs/heads/main'
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event_name != 'workflow_run' ||
+        (github.event.workflow_run.head_repository.full_name == github.repository &&
+         github.event.workflow_run.head_branch == 'main' &&
+         (github.event.workflow_run.event == 'workflow_dispatch' || github.event.workflow_run.event == 'schedule')))
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
+          ref: main
           persist-credentials: false
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
           python-version: '3.12'
       - name: Test status collector and publisher contract
         run: python -m unittest discover -s tests -p 'test_*.py' -v
+      - name: Coalesce completed reconciliations for five minutes
+        id: gate
+        env:
+          CONTROLLER_COMPLETED_AT: ${{ github.event.workflow_run.updated_at }}
+          CONFLUENCE_PUBLISH_ENABLED: ${{ vars.CONFLUENCE_PUBLISH_ENABLED }}
+          CONFLUENCE_EMAIL: ${{ secrets.CONFLUENCE_EMAIL }}
+          CONFLUENCE_API_TOKEN: ${{ secrets.CONFLUENCE_API_TOKEN }}
+          CONFLUENCE_CLOUD_ID: ${{ vars.CONFLUENCE_CLOUD_ID }}
+          CONFLUENCE_PAGE_ID: ${{ vars.CONFLUENCE_PAGE_ID }}
+        run: python dashboard_gate.py
       - name: Select registered B repositories for the Transport token
+        if: steps.gate.outputs.publish == 'true'
         id: targets
         run: |
           python - <<'PY'
@@ -42,6 +60,7 @@ jobs:
                   output.write(f'{key}={value}\n')
           PY
       - name: Read-only Transport token for registered B repositories
+        if: steps.gate.outputs.publish == 'true'
         id: transport-read
         uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510
         with:
@@ -52,28 +71,23 @@ jobs:
           permission-contents: read
           permission-pull-requests: read
       - name: Collect complete GitHub snapshot and render ADF
+        if: steps.gate.outputs.publish == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TRANSPORT_READ_TOKEN: ${{ steps.transport-read.outputs.token }}
           CONTROLLER_REPO: ${{ github.repository }}
-        run: python status.py --controller "$CONTROLLER_REPO" --out status.json --snapshot snapshot.json
-      - name: Keep generated output for inspection
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: contribution-sync-status
-          path: |
-            status.json
-            snapshot.json
-          if-no-files-found: error
-          retention-days: 7
+        run: python status.py --controller "$CONTROLLER_REPO" --out status.json --snapshot snapshot.json --snapshot-time-out snapshot-at.txt
       - name: Publish the existing Confluence page
-        if: vars.CONFLUENCE_PUBLISH_ENABLED == 'true' && github.event_name != 'push'
+        if: steps.gate.outputs.publish == 'true' && vars.CONFLUENCE_PUBLISH_ENABLED == 'true'
         env:
           CONFLUENCE_EMAIL: ${{ secrets.CONFLUENCE_EMAIL }}
           CONFLUENCE_API_TOKEN: ${{ secrets.CONFLUENCE_API_TOKEN }}
           CONFLUENCE_CLOUD_ID: ${{ vars.CONFLUENCE_CLOUD_ID }}
           CONFLUENCE_PAGE_ID: ${{ vars.CONFLUENCE_PAGE_ID }}
-        run: python publish.py status.json
+        run: python publish.py status.json --snapshot-time-file snapshot-at.txt
       - name: Report collection-only mode explicitly
         if: vars.CONFLUENCE_PUBLISH_ENABLED != 'true' || github.event_name == 'push'
         run: echo 'GitHub snapshot generated. Confluence publication was skipped; this run is not proof of a live page update.' >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove temporary dashboard files
+        if: always()
+        run: rm -f -- status.json snapshot.json snapshot-at.txt

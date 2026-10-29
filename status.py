@@ -19,6 +19,16 @@ STATUS = {"success": ("OK", "green"), "failure": ("Failed", "red"),
           "waiting": ("Waiting", "blue"), "pending": ("Pending", "blue"),
           "skipped": ("Skipped", "neutral"), "action_required": ("Action required", "yellow")}
 
+TEAM_BY_TARGET = {  # TechX repository -> team; keep in sync with bridge.config.json
+    "TechX-Corp/spa-workspace-xbrain": "DE",
+    "TechX-Corp/qa-agent": "QA",
+    "TechX-Corp/testing-intelligence": "QA",
+    "TechX-Corp/security-test-platform": "QA",
+    "TechX-Corp/Limbic-Hub": "QA",
+    "TechX-Corp/Agent_Autonomous_QA": "QA",
+    "TechX-Corp/xanima": "Collab",
+}
+
 class NoRedirect(HTTPRedirectHandler):
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         return None
@@ -96,7 +106,7 @@ def parse_time(value):
 
 def fmt_time(value):
     date = parse_time(value)
-    return date.astimezone(ICT).strftime("%H:%M %d/%m/%Y") if date else "â€”"
+    return date.astimezone(ICT).strftime("%H:%M %d/%m/%Y") if date else "—"
 
 
 def transport_scope(registry, controller):
@@ -146,20 +156,38 @@ def collect(api, target_api, controller, max_runs=200, now=None):
         branch, job, success = p.get("branch", "main"), jobs.get(p["id"]), successes.get(p["id"])
         state = (job.get("conclusion") or job.get("status")) if job else None
         label, color = STATUS.get(state, ("Not found in scan", "neutral"))
+        steps = job.get("steps", []) if job else []
+        limited = any(s.get("name") == "Transport token without pending Workflows permission"
+                      and s.get("conclusion") == "success" for s in steps)
+        failed = [s["name"] for s in steps if s.get("conclusion") == "failure"]
+        detail = ""
+        if state in ("failure", "timed_out") and failed:
+            detail = "Failed step: " + failed[-1]
+        elif limited:
+            detail = "Sync continues; workflow-changing PR revisions wait for Workflows write."
+            if state == "success":
+                label, color = "Limited", "yellow"
         pending = 0
+        pending_prs = []
         query = urlencode({"state": "open", "base": branch})
         for prs in target_api.pages(f"/repos/{p['target']}/pulls?{query}"):
-            pending += sum(1 for pr in prs if pr["base"]["ref"] == branch
-                           and pr.get("user", {}).get("login") == bot
-                           and pr["head"].get("repo", {}).get("full_name") == p["target"]
-                           and BRIDGE_HEAD.fullmatch(pr["head"]["ref"]))
+            for pr in prs:
+                if (pr["base"]["ref"] == branch and pr.get("user", {}).get("login") == bot
+                        and pr["head"].get("repo", {}).get("full_name") == p["target"]
+                        and BRIDGE_HEAD.fullmatch(pr["head"]["ref"])):
+                    pending += 1
+                    if len(pending_prs) < 10:
+                        pending_prs.append({"number": pr["number"], "title": pr.get("title", ""),
+                                            "draft": bool(pr.get("draft"))})
         completed = success.get("completed_at") if success else None
         stale = not completed or (now - parse_time(completed)).total_seconds() > 86400
-        rows.append({"id": p["id"], "team": p.get("team") or ("AI" if p["target"].split('/')[1].startswith('xora-') else "Unassigned"),
+        rows.append({"id": p["id"], "team": TEAM_BY_TARGET.get(p["target"]) or p.get("team") or
+                     ("AI" if p["target"].split('/')[1].startswith('xora-') else "Unassigned"),
                      "source": p["source"], "target": p["target"], "branch": branch,
                      "time": job and (job.get("completed_at") or job.get("started_at") or job.get("created_at")),
                      "last_success": completed, "run_url": job and job["html_url"],
-                     "label": label, "color": color, "pending": pending, "stale": stale})
+                     "label": label, "color": color, "detail": detail, "transport_limited": limited,
+                     "pending": pending, "pending_prs": pending_prs, "stale": stale})
     return {"controller": controller, "rows": rows, "scan_limit": max_runs}
 
 
@@ -175,28 +203,69 @@ def build_doc(sections, now=None):
     now = now or datetime.now(ICT)
     content = [{"type": "panel", "attrs": {"panelType": "info"}, "content": [
         {"type": "paragraph", "content": [text(
-            f"This page is updated automatically by a bot. Do not edit it manually. Last updated {now.astimezone(ICT):%H:%M %d/%m/%Y} (ICT).")]}]}]
+            f"Updated automatically. Do not edit manually. Last updated {now.astimezone(ICT):%H:%M %d/%m/%Y} (ICT).")]}]}]
+    limited_count = sum(bool(row.get("transport_limited")) for section in sections for row in section["rows"])
+    if limited_count:
+        content.append({"type": "panel", "attrs": {"panelType": "warning"}, "content": [
+            {"type": "paragraph", "content": [text(
+                f"Workflow transfer limited for {limited_count} repo pairs in their latest run. "
+                "Sync continues; workflow-changing PR revisions wait for Workflows write. "
+                "Approve the Transport App permission and installation update to restore full transfer.")]}]})
     for index, section in enumerate(sections):
-        headers = ["Team", "XBrain repository", "TechX repository", "Target branch", "Last sync", "Status", "PRs awaiting TechX review"]
+        headers = ["Team", "Repository pair", "Target", "Latest run (ICT)", "Sync status", "Open PRs"]
         table = [{"type": "tableRow", "content": [cell(text(h), header=True) for h in headers]}]
         for i, row in enumerate(section["rows"]):
             stamp = cell(text(fmt_time(row["time"])))
             if row["run_url"]:
-                stamp["content"][0]["content"] += [text(" Â· "), text("run", row["run_url"])]
-            if row["label"] != "OK" or row["stale"]:
-                stamp["content"].append({"type":"paragraph", "content":[text("Last successful sync: " + fmt_time(row["last_success"]))]})
+                stamp["content"][0]["content"] += [text(" · "), text("Run", row["run_url"])]
+            if row["label"] not in ("OK", "Limited") or row["stale"]:
+                stamp["content"].append({"type": "paragraph", "content": [
+                    text("Last successful sync: " + fmt_time(row["last_success"]))]})
             state = cell({"type": "status", "attrs": {"text": row["label"].upper(), "color": row["color"], "localId": f"s{index}-{i}"}})
+            # Keep failures visible; the shared permission warning belongs above the table.
+            if row.get("detail") and (not row.get("transport_limited") or row["label"] == "Failed"):
+                state["content"].append({"type": "paragraph", "content": [text(row["detail"])]})
             if row["stale"]:
-                state["content"].append({"type":"paragraph", "content":[text("No successful sync in last 24h / scan")]})
+                state["content"].append({"type": "paragraph", "content": [text("No successful sync in last 24h / scan")]})
             branch = text(row["branch"])
-            branch["marks"] = [{"type":"code"}]
+            branch["marks"] = [{"type": "code"}]
+            pair = cell(text(row["target"].split("/")[1]))
+            pair["content"].append({"type": "paragraph", "content": [
+                text("XBrain", "https://github.com/" + row["source"]), text(" · "),
+                text("TechX", "https://github.com/" + row["target"])]})
             table.append({"type": "tableRow", "content": [
-                cell(text(row["team"])), cell(text(row["source"].split("/")[1], "https://github.com/" + row["source"])),
-                cell(text(row["target"].split("/")[1], "https://github.com/" + row["target"])), cell(branch), stamp,
-                state, cell(text(row["pending"]))]})
-        content += [{"type": "heading", "attrs": {"level": 2}, "content": [text(section["controller"].split("/")[1], "https://github.com/" + section["controller"])]},
-                    {"type": "table", "attrs": {"layout": "wide"}, "content": table},
-                    {"type": "paragraph", "content": [text(f"Status shows the latest reconciliation job. OK does not mean every PR was accepted. PR count includes all open bridge PRs, including drafts. History covers up to {section['scan_limit']} controller runs.")]}]
+                cell(text(row["team"])), pair, cell(branch), stamp, state, cell(text(row["pending"]))]})
+        content += [
+            {"type": "heading", "attrs": {"level": 2}, "content": [text("Repository overview")]},
+            {"type": "paragraph", "content": [text("Controller: "), text(section["controller"], "https://github.com/" + section["controller"])]},
+            {"type": "table", "attrs": {"layout": "wide"}, "content": table},
+            {"type": "paragraph", "content": [text(
+                f"Status reflects the latest reconciliation job, not PR approval. LIMITED means reduced workflow-transfer permissions. History covers up to {section['scan_limit']} controller runs.")]},
+            {"type": "heading", "attrs": {"level": 2}, "content": [text("Open contribution PRs at TechX")]},
+            {"type": "paragraph", "content": [text(
+                "Expand a repository to view its PRs. Includes drafts and approved PRs awaiting merge; OPEN does not indicate review approval.")]}]
+        open_rows = [row for row in section["rows"] if row["pending"]]
+        for i, row in enumerate(open_rows):
+            repo = row["target"].split("/")[1]
+            entries = []
+            for j, pr in enumerate(row.get("pending_prs", [])):
+                entries.append({"type": "listItem", "content": [{"type": "paragraph", "content": [
+                    text(f"#{pr['number']}: {pr['title']}", f"https://github.com/{row['target']}/pull/{pr['number']}"),
+                    text(" "), {"type": "status", "attrs": {
+                        "text": "DRAFT" if pr["draft"] else "OPEN", "color": "neutral" if pr["draft"] else "blue",
+                        "localId": f"pr{index}-{i}-{j}"}}]}]})
+            details = [{"type": "paragraph", "content": [text("Target: " + row["branch"])]}]
+            if entries:
+                details.append({"type": "bulletList", "content": entries})
+            if row["pending"] > len(entries):
+                details.append({"type": "paragraph", "content": [
+                    text(f"Showing {len(entries)} of {row['pending']} open PRs.")]})
+            query = urlencode({"q": f"is:pr is:open base:{row['branch']}"})
+            details.append({"type": "paragraph", "content": [
+                text("Browse open PRs on this target branch", f"https://github.com/{row['target']}/pulls?{query}")]})
+            content.append({"type": "expand", "attrs": {"title": f"{repo} · {row['pending']} open PRs"}, "content": details})
+        if not open_rows:
+            content.append({"type": "paragraph", "content": [text("No open contribution PRs.")]})
     return {"type": "doc", "version": 1, "content": content}
 
 
@@ -206,6 +275,7 @@ def main():
     parser.add_argument("--out", required=True)
     parser.add_argument("--snapshot", default="snapshot.json")
     parser.add_argument("--max-runs", type=int, default=200)
+    parser.add_argument("--snapshot-time-out")
     args = parser.parse_args()
     if not 1 <= args.max_runs <= 1000:
         parser.error("max-runs must be between 1 and 1000")
@@ -213,10 +283,14 @@ def main():
         raise ValueError("Both GH_TOKEN and TRANSPORT_READ_TOKEN are required; no token fallback")
     api = GitHub(os.environ["GH_TOKEN"])
     target_api = GitHub(os.environ["TRANSPORT_READ_TOKEN"])
+    snapshot_at = datetime.now(timezone.utc).isoformat()
     sections = [collect(api, target_api, c, args.max_runs) for c in args.controller]
     for filename, data in [(args.out, build_doc(sections)), (args.snapshot, sections)]:
         with open(filename, "w", encoding="utf-8") as output:
             json.dump(data, output, ensure_ascii=False, indent=2)
+    if args.snapshot_time_out:
+        with open(args.snapshot_time_out, 'w', encoding='utf-8') as output:
+            output.write(snapshot_at + '\n')
     print("Collected", sum(len(s["rows"]) for s in sections), "pairs; GitHub reads only")
 
 if __name__ == "__main__":

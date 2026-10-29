@@ -6,7 +6,9 @@ import os
 import re
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener
-from status import NoRedirect
+from status import NoRedirect, parse_time
+
+SNAPSHOT_PREFIX = 'Contribution status snapshot: '
 
 class Conflict(Exception):
     pass
@@ -39,9 +41,13 @@ class Publisher:
         except (URLError, TimeoutError, json.JSONDecodeError):
             raise RuntimeError(f"Confluence {method} failed: network or invalid response") from None
 
-    def publish(self, document):
+    def publish(self, document, snapshot_at=None):
         if not isinstance(document, dict) or document.get("type") != "doc" or document.get("version") != 1 or not isinstance(document.get("content"), list):
             raise ValueError("Expected an ADF document")
+        if snapshot_at is not None:
+            timestamp = parse_time(snapshot_at)
+            if timestamp is None or timestamp.tzinfo is None:
+                raise ValueError('Expected a timezone-aware snapshot timestamp')
         for attempt in range(2):
             page = self.request("GET")
             if str(page.get("id")) != self.page_id or page.get("status") != "current":
@@ -49,7 +55,7 @@ class Publisher:
             version = page["version"]["number"] + 1
             payload = {"id": self.page_id, "status": "current", "title": page["title"],
                        "body": {"representation": "atlas_doc_format", "value": json.dumps(document, ensure_ascii=False)},
-                       "version": {"number": version, "message": "Automated contribution status update"}}
+                       "version": {"number": version, "message": SNAPSHOT_PREFIX + snapshot_at if snapshot_at else "Automated contribution status update"}}
             try:
                 result = self.request("PUT", payload)
             except Conflict:
@@ -64,12 +70,17 @@ class Publisher:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("input")
+    parser.add_argument("--snapshot-time-file")
     args = parser.parse_args()
     with open(args.input, encoding="utf-8") as handle:
         document = json.load(handle)
     publisher = Publisher(os.environ.get("CONFLUENCE_CLOUD_ID"), os.environ.get("CONFLUENCE_PAGE_ID"),
                           os.environ.get("CONFLUENCE_EMAIL"), os.environ.get("CONFLUENCE_API_TOKEN"))
-    version = publisher.publish(document)
+    snapshot_at = None
+    if args.snapshot_time_file:
+        with open(args.snapshot_time_file, encoding='utf-8') as handle:
+            snapshot_at = handle.read().strip()
+    version = publisher.publish(document, snapshot_at)
     print(f"Published Confluence page {publisher.page_id}, version {version}")
 
 if __name__ == "__main__":

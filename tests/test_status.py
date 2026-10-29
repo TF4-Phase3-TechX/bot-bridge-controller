@@ -17,8 +17,9 @@ def job(pair, state="success"):
     return {"name": "Reconcile " + pair, "conclusion": state, "status": "completed", "html_url": "https://github.com/B/controller/actions/runs/1/job/1",
             "created_at": "2026-10-26T23:00:00Z", "started_at": "2026-10-26T23:00:10Z", "completed_at": "2026-10-26T23:01:00Z"}
 
-def pr(repo, branch="dev", author="transport[bot]", head="incoming/a-pr-1"):
-    return {"base": {"ref": branch}, "user": {"login": author}, "head": {"ref": head, "repo": {"full_name": repo}}}
+def pr(repo, branch="dev", author="transport[bot]", head="incoming/a-pr-1", number=1, title="Example contribution", draft=False):
+    return {"number":number, "title":title, "draft":draft, "base": {"ref": branch},
+            "user": {"login": author}, "head": {"ref": head, "repo": {"full_name": repo}}}
 
 class Fixture:
     def __init__(self, fail=False): self.fail, self.paths = fail, []
@@ -43,6 +44,93 @@ class Fixture:
             yield [pr("B/main-repo",branch="main")]
 
 class StatusTests(unittest.TestCase):
+    def test_limited_mode_and_pr_links_reuse_existing_reads(self):
+        class Mode(Fixture):
+            def __init__(self, limited):
+                super().__init__()
+                self.limited = limited
+            def pages(self, path, key=None):
+                for items in super().pages(path, key):
+                    if '/jobs?' in path:
+                        for item in items:
+                            item['conclusion'] = 'success'
+                            if self.limited:
+                                item['steps'] = [{'name':'Transport token without pending Workflows permission',
+                                                  'conclusion':'success'}]
+                    yield items
+        normal, limited = Mode(False), Mode(True)
+        collect(normal, normal, CTRL, now=NOW)
+        data = collect(limited, limited, CTRL, now=NOW)
+        self.assertEqual(normal.paths, limited.paths)
+        self.assertTrue(all(row['label']=='Limited' and row['color']=='yellow' for row in data['rows']))
+        self.assertEqual(data['rows'][0]['pending'],101)
+        self.assertEqual(len(data['rows'][0]['pending_prs']),10)
+        doc = json.dumps(build_doc([data],NOW))
+        self.assertIn('LIMITED',doc)
+        self.assertIn('Workflows write',doc)
+        self.assertIn('https://github.com/B/dev-repo/pull/1',doc)
+        self.assertIn('Showing 10 of 101 open PRs.',doc)
+
+    def test_failed_steps_stay_red_and_draft_pr_titles_are_rendered_as_text(self):
+        class Failed(Fixture):
+            def pages(self, path, key=None):
+                if '/pulls?' in path:
+                    self.paths.append(path)
+                    repo = 'B/dev-repo' if 'dev-repo' in path else 'B/main-repo'
+                    branch = 'dev' if 'dev-repo' in path else 'main'
+                    yield [pr(repo,branch=branch,number=42,title='<b>Review this</b>',draft=True)]
+                else:
+                    for items in super().pages(path,key):
+                        if '/jobs?' in path:
+                            for item in items:
+                                item['steps']=[{'name':'Transport token without pending Workflows permission','conclusion':'success'},
+                                               {'name':'Transfer PRs','conclusion':'failure'}]
+                        yield items
+        api=Failed(); data=collect(api,api,CTRL,now=NOW)
+        self.assertEqual(data['rows'][0]['label'],'Failed')
+        self.assertEqual(data['rows'][0]['detail'],'Failed step: Transfer PRs')
+        doc=json.dumps(build_doc([data],NOW))
+        self.assertIn('#42: <b>Review this</b>',doc)
+        self.assertIn('DRAFT',doc)
+        self.assertIn('https://github.com/B/dev-repo/pull/42',doc)
+
+    def test_overview_is_compact_and_prs_expand_outside_table(self):
+        api = Fixture()
+        data = collect(api, api, CTRL, now=NOW)
+        data['rows'][0].update(transport_limited=True, label='Limited', color='yellow',
+                              detail='Sync continues; workflow-changing PR revisions wait for Workflows write.')
+        data['rows'][1].update(transport_limited=True, label='Limited', color='yellow', pending=0, pending_prs=[])
+        title = 'A long contribution title ' * 12 + '<script>plain text</script>'
+        data['rows'][0]['pending_prs'][0]['title'] = title
+        paths = list(api.paths)
+        doc = build_doc([data], NOW)
+        self.assertEqual(paths, api.paths)
+        table = next(n for n in doc['content'] if n['type'] == 'table')
+        expands = [n for n in doc['content'] if n['type'] == 'expand']
+        self.assertEqual(len(expands), 1)
+        self.assertIn('dev-repo', expands[0]['attrs']['title'])
+        self.assertIn('101 open PRs', expands[0]['attrs']['title'])
+        self.assertNotIn('/pull/1', json.dumps(table))
+        self.assertNotIn(title, json.dumps(table))
+        self.assertIn(title, json.dumps(expands[0]))
+        warnings = [n for n in doc['content'] if n['type'] == 'panel' and n['attrs']['panelType'] == 'warning']
+        self.assertEqual(len(warnings), 1)
+        self.assertIn('2 repo pairs', json.dumps(warnings))
+        self.assertEqual(json.dumps(doc).count('workflow-changing PR revisions wait'), 1)
+        self.assertTrue(all(len(row['content']) == 6 for row in table['content']))
+
+    def test_empty_queue_has_no_expands_and_failures_remain_visible(self):
+        api = Fixture(); data = collect(api, api, CTRL, now=NOW)
+        for row in data['rows']:
+            row.update(pending=0, pending_prs=[])
+        data['rows'][0].update(transport_limited=True, detail='Failed step: Transfer PRs', stale=True)
+        doc = build_doc([data], NOW)
+        self.assertFalse(any(n['type'] == 'expand' for n in doc['content']))
+        table = next(n for n in doc['content'] if n['type'] == 'table')
+        self.assertIn('Failed step: Transfer PRs', json.dumps(table))
+        self.assertIn('No successful sync', json.dumps(table))
+        self.assertIn('No open contribution PRs.', json.dumps(doc))
+
     def test_custom_target_branches_are_queried_and_displayed(self):
         from unittest.mock import patch
         from status import valid_target_branch
@@ -117,7 +205,7 @@ class StatusTests(unittest.TestCase):
         self.assertEqual(adf["content"][0]["type"], "panel")
         self.assertEqual(adf["content"][0]["attrs"]["panelType"], "info")
         table = next(n for n in adf["content"] if n["type"] == "table")
-        self.assertTrue(all(len(row["content"]) == 7 for row in table["content"]))
+        self.assertTrue(all(len(row["content"]) == 6 for row in table["content"]))
         self.assertIn("https://github.com/B/controller", json.dumps(adf))
         self.assertIn("No successful sync", json.dumps(build_doc([{**data,"rows":[{**a,"stale":True}]}],NOW)))
     def test_incomplete_reads_fail_instead_of_reporting_zero(self):
@@ -161,7 +249,7 @@ class ConfluenceTests(unittest.TestCase):
                 result=({'id':'123','status':'current','title':'Updated title' if count==3 else 'Title','version':{'number':7 if count==3 else 4}}
                         if req.method=='GET' else {'id':'123','version':{'number':8}})
                 return io.BytesIO(json.dumps(result).encode())
-        op=Opener(); doc={'type':'doc','version':1,'content':[{'type':'paragraph','content':[{'type':'text','text':'Tiáº¿ng Viá»‡t <script>'}]}]}
+        op=Opener(); doc={'type':'doc','version':1,'content':[{'type':'paragraph','content':[{'type':'text','text':'Tiếng Việt <script>'}]}]}
         self.assertEqual(self.publisher(op).publish(doc),8)
         self.assertEqual([m for m,_ in op.calls],['GET','PUT','GET','PUT'])
         payload=op.calls[-1][1]

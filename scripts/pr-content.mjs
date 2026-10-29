@@ -17,7 +17,9 @@ export function contentParts(repo, pr, kind, id, metadata, text) {
     if (part) parts.push(part);
     return parts;
   };
-  const texts = chunk(String(text ?? ''), 45000), details = chunk(JSON.stringify(metadata, null, 2), 9000);
+  // Leave room for the metadata fence even if metadata itself contains long
+  // backtick runs (e.g. an inline review's diff hunk).
+  const texts = chunk(String(text ?? ''), 45000), details = chunk(JSON.stringify(metadata, null, 2), 3000);
   const count = Math.max(1, texts.length, details.length);
   return Array.from({ length: count }, (_, i) => {
     const marker = `${prefix(repo, pr)}${kind}:${id}:${i + 1} -->`;

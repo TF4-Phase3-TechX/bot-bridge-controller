@@ -20,6 +20,11 @@ test('published reviews and replies retain provenance; pending feedback and brid
   assert.ok(!JSON.stringify(rows).includes('secret'));
   assert.ok(!JSON.stringify(rows).includes('echo'));
 });
+test('long metadata fences cannot push native Markdown copies over the comment limit', () => {
+  const parts = contentParts('A/repo', 1, 'inline', 1, { diff_hunk: '`'.repeat(47000) }, 'x'.repeat(50000));
+  assert.ok(parts.length > 1);
+  assert.ok(parts.every(p => p.body.length <= 60000));
+});
 test('thread reader paginates threads and nested comments and preserves resolution', async () => {
   let n = 0;
   const result = await readThreads(async (_repo, _q, v) => {

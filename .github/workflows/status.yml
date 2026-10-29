@@ -2,7 +2,7 @@ name: Contribution sync status
 on:
   workflow_dispatch:
   workflow_run:
-    workflows: ['Contribution bridge controller']
+    workflows: ['Isolated bridge - B decides']
     types: [completed]
     branches: [main]
   schedule:
